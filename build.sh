@@ -1,26 +1,29 @@
 #!/bin/bash
-# Vygeneruje Kodi repozitár zo zdrojov addonu.
+# Zabalí addon aj repo addon a vygeneruje index pre Kodi.
 set -e
-SRC="$HOME/plugin.video.o2tv"
 OUT="$HOME/kodi-repo/docs"
-ID="plugin.video.o2tv"
-VER=$(sed -n "s/.*<addon id=\"$ID\".*version=\"\([^\"]*\)\".*/\1/p" "$SRC/addon.xml")
+SOURCES=("$HOME/plugin.video.o2tv" "$HOME/kodi-repo/repository.bigtime")
 
-mkdir -p "$OUT/$ID"
 rm -rf /tmp/kodibuild && mkdir -p /tmp/kodibuild
-cp -r "$SRC" /tmp/kodibuild/$ID
-rm -rf /tmp/kodibuild/$ID/.git /tmp/kodibuild/$ID/.gitignore
-find /tmp/kodibuild -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true
-(cd /tmp/kodibuild && zip -qr "$OUT/$ID/$ID-$VER.zip" $ID)
-cp "$SRC/addon.xml" "$OUT/$ID/addon.xml"
+for SRC in "${SOURCES[@]}"; do
+  ID=$(basename "$SRC")
+  VER=$(sed -n 's/.*<addon id="'"$ID"'".*version="\([^"]*\)".*/\1/p' "$SRC/addon.xml")
+  mkdir -p "$OUT/$ID"
+  cp -r "$SRC" /tmp/kodibuild/$ID
+  rm -rf /tmp/kodibuild/$ID/.git /tmp/kodibuild/$ID/.gitignore
+  find /tmp/kodibuild/$ID -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true
+  (cd /tmp/kodibuild && zip -qr "$OUT/$ID/$ID-$VER.zip" $ID)
+  cp "$SRC/addon.xml" "$OUT/$ID/addon.xml"
+  echo "  $ID $VER"
+done
 
-# index pre Kodi
-{
-  echo '<?xml version="1.0" encoding="UTF-8"?>'
-  echo '<addons>'
-  sed '1d' "$SRC/addon.xml"
-  echo '</addons>'
-} > "$OUT/addons.xml"
-(cd "$OUT" && md5sum addons.xml | cut -d' ' -f1 > addons.xml.md5)
-
-echo "hotovo: $ID $VER"
+python3 - "$OUT" "${SOURCES[@]}" << 'PYEOF'
+import sys, re, hashlib, os
+out, srcs = sys.argv[1], sys.argv[2:]
+parts = [re.sub(r'^<\?xml[^>]*\?>\s*', '', open(os.path.join(s, "addon.xml")).read()).strip()
+         for s in srcs]
+xml = '<?xml version="1.0" encoding="UTF-8"?>\n<addons>\n' + "\n".join(parts) + '\n</addons>\n'
+open(os.path.join(out, "addons.xml"), "w").write(xml)
+open(os.path.join(out, "addons.xml.md5"), "w").write(hashlib.md5(xml.encode()).hexdigest() + "\n")
+PYEOF
+echo "index hotový"
