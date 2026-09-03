@@ -9,8 +9,17 @@ for SRC in "${SOURCES[@]}"; do
   ID=$(basename "$SRC")
   VER=$(sed -n 's/.*<addon id="'"$ID"'".*version="\([^"]*\)".*/\1/p' "$SRC/addon.xml")
   mkdir -p "$OUT/$ID"
-  cp -r "$SRC" /tmp/kodibuild/$ID
+  # ber len subory, ktore git sleduje - inak by sa do zverejneneho zipu
+  # dostali aj ignorovane veci (session.json, o2_auth.json, logy, export)
+  mkdir -p /tmp/kodibuild/$ID
+  if git -C "$SRC" rev-parse --git-dir >/dev/null 2>&1; then
+    (cd "$SRC" && git ls-files -z | tar --null -cf - -T -) \
+      | tar -xf - -C /tmp/kodibuild/$ID
+  else
+    cp -r "$SRC"/. /tmp/kodibuild/$ID/
+  fi
   rm -rf /tmp/kodibuild/$ID/.git /tmp/kodibuild/$ID/.gitignore
+  rm -rf /tmp/kodibuild/$ID/.claude /tmp/kodibuild/$ID/CLAUDE.md
   find /tmp/kodibuild/$ID -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true
   (cd /tmp/kodibuild && zip -qr "$OUT/$ID/$ID-$VER.zip" $ID)
   cp "$SRC/addon.xml" "$OUT/$ID/addon.xml"
