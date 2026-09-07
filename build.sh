@@ -20,6 +20,9 @@ for SRC in "${SOURCES[@]}"; do
   fi
   rm -rf /tmp/kodibuild/$ID/.git /tmp/kodibuild/$ID/.gitignore
   rm -rf /tmp/kodibuild/$ID/.claude /tmp/kodibuild/$ID/CLAUDE.md
+  # tools/ su skripty pre PC (prihlasenie), do doplnku nepatria -
+  # inak by kazda ich zmena znamenala nove vydanie pre pouzivatelov
+  rm -rf /tmp/kodibuild/$ID/tools
   find /tmp/kodibuild/$ID -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true
   (cd /tmp/kodibuild && zip -qr "$OUT/$ID/$ID-$VER.zip" $ID)
   cp "$SRC/addon.xml" "$OUT/$ID/addon.xml"
