@@ -2,7 +2,7 @@
 # Zabalí addon aj repo addon a vygeneruje index pre Kodi.
 set -e
 OUT="$HOME/kodi-repo/docs"
-SOURCES=("$HOME/plugin.video.o2tv" "$HOME/kodi-repo/repository.bigtime" "$HOME/kodi-repo/service.sc.keepalive")
+SOURCES=("$HOME/plugin.video.o2tv" "$HOME/kodi-repo/repository.bigtime" "$HOME/kodi-repo/service.sc.keepalive" "$HOME/sosac-tuf/plugin.video.sosac.tuf")
 
 rm -rf /tmp/kodibuild && mkdir -p /tmp/kodibuild
 for SRC in "${SOURCES[@]}"; do
