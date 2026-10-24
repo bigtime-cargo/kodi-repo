@@ -41,7 +41,7 @@
     <license>GPL-3.0-or-later</license>
   </extension>
 </addon>
-<addon id="plugin.video.sosac.tuf" name="Sosáč TUF" version="1.2.0" provider-name="matus (podľa L. Zoubek + jondas)">
+<addon id="plugin.video.sosac.tuf" name="Sosáč TUF" version="1.2.1" provider-name="matus (podľa L. Zoubek + jondas)">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
     </requires>
