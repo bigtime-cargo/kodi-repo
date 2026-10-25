@@ -41,7 +41,7 @@
     <license>GPL-3.0-or-later</license>
   </extension>
 </addon>
-<addon id="plugin.video.sosac.tuf" name="Sosáč TUF" version="1.2.1" provider-name="matus (podľa L. Zoubek + jondas)">
+<addon id="plugin.video.sosac.tuf" name="Sosáč TUF" version="1.3.0" provider-name="matus (podľa L. Zoubek + jondas)">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
     </requires>
@@ -51,8 +51,8 @@
     <extension point="xbmc.addon.metadata">
         <summary lang="sk_SK">Filmy a seriály zo sosac.tv v štýle Stream Cinema</summary>
         <summary lang="en_GB">Movies and TV shows from sosac.tv, Stream Cinema style</summary>
-        <description lang="sk_SK">Samostatná verzia Sosáča pre Kodi 21 a Python 3.14: plagáty, popisy a pozadia z TMDB, bez závislosti na script.module.stream.resolver.</description>
-        <description lang="en_GB">Standalone Sosáč for Kodi 21 and Python 3.14 with TMDB artwork and plots.</description>
+        <description lang="sk_SK">Samostatná verzia Sosáča pre Kodi 21 a Python 3.14: plagáty, popisy a pozadia z TMDB (popis po slovensky, inak po česky či anglicky), hodnotenie z IMDb, bez závislosti na script.module.stream.resolver.</description>
+        <description lang="en_GB">Standalone Sosáč for Kodi 21 and Python 3.14 with TMDB artwork and plots and IMDb ratings.</description>
         <license>GPL-2.0-or-later</license>
         <platform>all</platform>
         <assets>
