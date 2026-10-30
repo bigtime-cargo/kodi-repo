@@ -1,0 +1,22 @@
+--- a/resources/lib/youtube_plugin/kodion/network/http_server.py
++++ b/resources/lib/youtube_plugin/kodion/network/http_server.py
+@@ -73,8 +73,19 @@
+                 pass
+             if not handler._close_all and not wfile.closed:
+                 handler.finish()
++            # Local patch (kontrola-TCL): drop the finished handler, otherwise
++            # the list keeps every connection until the proxy shuts down
++            try:
++                HTTPServer._handlers.remove(handler)
++            except ValueError:
++                pass
+ 
+     def server_close(self):
++        # Close the listening socket explicitly. Otherwise it survives a
++        # restart and, with allow_reuse_port, keeps receiving a share of new
++        # connections that are never accepted
++        TCPServer.server_close(self)
++
+         request_handler = self.RequestHandlerClass
+         request_handler._close_all = True
+         request_handler.timeout = 0

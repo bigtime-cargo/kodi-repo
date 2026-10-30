@@ -1,0 +1,32 @@
+{
+  "format": 1,
+  "patches": [
+    {
+      "addon_id": "plugin.video.youtube",
+      "version": "7.4.4",
+      "rel_path": "resources/lib/youtube_plugin/kodion/network/http_server.py",
+      "orig_sha256": "fcf33d76464561d48116e2fbf7bc72bca0b46b5eb94667271a1d830f05469fb2",
+      "patched_sha256": "dac6d9de81d70b5825ec0e4ee63a0431ca19a2ecf2bf297993279a65e081e65b",
+      "patch": "plugin.video.youtube/7.4.4/http_server.py.patch",
+      "popis": "YouTube proxy: server_close zatvára počúvajúci socket a dokončené handlery sa uvoľňujú"
+    },
+    {
+      "addon_id": "plugin.video.youtube",
+      "version": "7.4.4",
+      "rel_path": "resources/lib/youtube_plugin/youtube/provider.py",
+      "orig_sha256": "7cc8c4c161cde7d5abfc2d2fef440e784c1b51635f9e64739feaa779035e958a",
+      "patched_sha256": "d011c05e171ea1d363cfe116e9f7e745057bbeb3f772a937596fce5abe1aab9e",
+      "patch": "plugin.video.youtube/7.4.4/provider.py.patch",
+      "popis": "YouTube tokeny: zrušený refresh token zneplatní len svoj slot, nie všetky tri"
+    },
+    {
+      "addon_id": "service.sc.helper",
+      "version": "1.22.1",
+      "rel_path": "service.py",
+      "orig_sha256": "ead41628a4e5830e51db0aef53fbaddbf59a95d42c9e14181a7017d377f298b4",
+      "patched_sha256": "6fcdbb86bf0a76ee5086510b91c0be7cbfa460ca6c63bff7ea3685b244e74bc5",
+      "patch": "service.sc.helper/1.22.1/service.py.patch",
+      "popis": "SC helper: session expiruje po 12 h namiesto 30 min (reconnect po pauze už nedá 404)"
+    }
+  ]
+}

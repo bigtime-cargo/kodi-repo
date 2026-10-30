@@ -1,0 +1,40 @@
+--- a/resources/lib/youtube_plugin/youtube/provider.py
++++ b/resources/lib/youtube_plugin/youtube/provider.py
+@@ -282,12 +282,28 @@
+             if num_refresh_tokens and num_access_tokens != num_refresh_tokens:
+                 access_tokens = [None, None, None, None]
+                 token_expiry = 0
++                revoked = False
+                 try:
+                     for token_type, value in enumerate(refresh_tokens):
+                         if not value:
+                             continue
+ 
+-                        json_data = client.refresh_token(token_type, value)
++                        # Local patch (kontrola-TCL): a revoked token only
++                        # invalidates its own slot. Previously the first
++                        # InvalidGrant reset all refresh tokens, although the
++                        # other clients' tokens were still valid.
++                        try:
++                            json_data = client.refresh_token(token_type,
++                                                             value)
++                        except InvalidGrant as exc:
++                            self.log.warning(('Refresh token revoked',
++                                              'Token type: %d',
++                                              'Error:      %r'),
++                                             token_type,
++                                             exc)
++                            refresh_tokens[token_type] = ''
++                            revoked = True
++                            continue
+                         if not json_data:
+                             continue
+ 
+@@ -303,6 +319,7 @@
+                             dev_id,
+                             access_token=access_tokens,
+                             expiry=token_expiry,
++                            refresh_token=refresh_tokens if revoked else None,
+                         )
+                     else:
+                         raise InvalidGrant('Failed to refresh access token(s)')

@@ -1,0 +1,13 @@
+--- a/service.py
++++ b/service.py
+@@ -65,6 +65,10 @@
+ 
+ def main():
+     server, session_manager = start_server(port=0)
++    # Lokalna uprava (kontrola-TCL, 2026-10-14): session expiruje 1800 s po
++    # poslednom HTTP requeste a dlhe prehravanie je jediny request, takze
++    # reconnect po 30+ min dostal 404 a epizoda spadla. 12 h staci na cokolvek.
++    session_manager._expiry = 12 * 3600
+     port = server.server_address[1]
+ 
+     if _KODI:

@@ -41,6 +41,25 @@
     <license>GPL-3.0-or-later</license>
   </extension>
 </addon>
+<addon id="service.bigtime.setup" name="Bigtime nastavenie" version="1.0.0" provider-name="matus">
+  <requires>
+    <import addon="xbmc.python" version="3.0.0"/>
+    <import addon="plugin.video.o2tv" version="1.2.1"/>
+    <import addon="pvr.iptvsimple"/>
+  </requires>
+  <extension point="xbmc.service" library="service.py"/>
+  <extension point="xbmc.python.script" library="default.py">
+    <provides>executable</provides>
+  </extension>
+  <extension point="xbmc.addon.metadata">
+    <summary lang="en_GB">Sets up IPTV Simple for O2 TV and keeps local patches of third-party add-ons in place.</summary>
+    <summary lang="sk_SK">Nastaví IPTV Simple pre O2 TV a stráži lokálne záplaty cudzích doplnkov.</summary>
+    <description lang="en_GB">Install it once on any device. It creates an IPTV Simple instance for the playlist and EPG exported by the O2 TV add-on (only when no instance already reads it) and re-applies the Bigtime patches to YouTube and Stream Cinema helper after their updates, when the file matches the known original. A changed add-on is never touched. No network access.</description>
+    <description lang="sk_SK">Stačí ho raz nainštalovať na ktorékoľvek zariadenie. Vytvorí inštanciu IPTV Simple pre playlist a EPG, ktoré exportuje doplnok O2 TV (len keď ich ešte nič nečíta), a po aktualizáciách znova nasadí záplaty Bigtime pre YouTube a helper Stream Cinema, ak sa súbor zhoduje so známym originálom. Zmenený doplnok sa nikdy nemení. Žiadny prístup na sieť.</description>
+    <platform>all</platform>
+    <license>GPL-3.0-or-later</license>
+  </extension>
+</addon>
 <addon id="plugin.video.sosac.tuf" name="Sosáč" version="1.3.3" provider-name="matus (podľa L. Zoubek + jondas)">
     <requires>
         <import addon="xbmc.python" version="3.0.0"/>
