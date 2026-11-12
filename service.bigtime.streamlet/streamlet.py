@@ -7,9 +7,12 @@
 #
 # Pravidlo č. 1: cudziu ani ručne vytvorenú inštanciu nikdy nemeniť. Nová vzniká
 # len keď žiadna nečíta lokálny súbor ani priamo URL streamletu.
+import hashlib
+import html
 import os
 import re
 import tempfile
+import unicodedata
 import urllib.request
 import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape
@@ -20,6 +23,10 @@ STREAMLET_HOST = 'repo.streamlet.info'
 INSTANCE_NAME = 'Streamlet CZ (Bigtime)'
 SETTINGS_DIR = 'special://userdata/addon_data/pvr.iptvsimple'
 LOCAL_NAME = 'streamlet-cz.m3u'
+RAW_NAME = 'streamlet-raw.m3u'      # opravené ID, ale bez filtra duplicít
+O2_PLAYLIST = 'special://userdata/addon_data/plugin.video.o2tv/playlist.m3u'
+MIN_O2_CHANNELS = 5          # kratší export O2 je podozrivý, filter sa nepoužije
+MIN_KEY = 3                  # kratší kľúč názvu by párovať príliš veľa
 
 MIN_CHANNELS = 20            # menej = stiahlo sa niečo iné než playlist
 MAX_BYTES = 5 * 1024 * 1024
@@ -116,15 +123,105 @@ def write_atomic(path, text):
     return True
 
 
-def refresh(url, local_path, timeout=30, opener=urllib.request.urlopen):
-    """Stiahne, opraví a zapíše playlist. Vráti (kanály, zmenených ID, zmenil sa súbor).
-    Pri akejkoľvek chybe vyhodí výnimku a starý súbor ostane nedotknutý."""
+# --- filter duplicít s O2 TV --------------------------------------------------
+#
+# Kanál zo streamletu, ktorý už má O2 TV, sa z lokálneho playlistu vynechá: O2 TV
+# má archív (catchup) a EPG zo svojho zdroja, kanál zo streamletu je len živý.
+# Porovnávajú sa názvy bez diakritiky, veľkosti písmen, interpunkcie a značiek
+# v zátvorkách ("(1080p)", "[Geo-blocked]"); poradie slov nevadí ("TV Barrandov" =
+# "Barrandov TV"). "Prima Cool" (CZ) a "Prima COOL SK" sa nezhodujú, sú to dva kanály.
+
+_TAG = re.compile(r'[\(\[][^)\]]*[\)\]]')
+
+
+def _fold(text):
+    text = unicodedata.normalize('NFKD', text)
+    return ''.join(c for c in text if not unicodedata.combining(c)).lower()
+
+
+def name_keys(name):
+    """Množina kľúčov názvu kanála (prázdna, ak je názov príliš krátky)."""
+    tokens = re.findall(r'[a-z0-9+]+', _fold(_TAG.sub(' ', html.unescape(name))))
+    keys = {''.join(tokens), ''.join(sorted(tokens))}
+    return {k for k in keys if len(k) >= MIN_KEY}
+
+
+def _entry_name(extinf):
+    tvg = re.search(r'tvg-name="([^"]*)"', extinf)
+    if tvg and tvg.group(1).strip():
+        return tvg.group(1)
+    return extinf.rsplit(',', 1)[1].strip() if ',' in extinf else ''
+
+
+def o2_keys(text):
+    """Kľúče názvov kanálov z playlistu O2 TV; None, ak vyzerá nepoužiteľne."""
+    if not text or '#EXTM3U' not in text:
+        return None
+    names = [_entry_name(m) for m in re.findall(r'#EXTINF:[^\n]*', text)]
+    names = [n for n in names if n]
+    if len(names) < MIN_O2_CHANNELS:
+        return None
+    keys = set()
+    for n in names:
+        keys |= name_keys(n)
+    return keys
+
+
+def keys_signature(keys):
+    """Odtlačok množiny kľúčov (na zistenie, že sa O2 zoznam zmenil)."""
+    if not keys:
+        return ''
+    return hashlib.sha1('\n'.join(sorted(keys)).encode('utf-8')).hexdigest()[:16]
+
+
+def filter_duplicates(text, keys):
+    """Vráti (playlist bez kanálov, ktoré už má O2 TV, zoznam vynechaných názvov)."""
+    if not keys:
+        return text, []
+    out, removed, entry = [], [], []
+    for line in text.split('\n'):
+        if not entry:
+            if line.startswith('#EXTINF'):
+                entry = [line]
+            else:
+                out.append(line)
+            continue
+        entry.append(line)
+        if line.strip() and not line.startswith('#'):        # adresa ukončuje záznam
+            name = _entry_name(entry[0])
+            if name_keys(name) & keys:
+                removed.append(name)
+            else:
+                out.extend(entry)
+            entry = []
+    out.extend(entry)           # nedokončený záznam na konci sa nechá tak
+    return '\n'.join(out), removed
+
+
+def refresh(url, local_path, raw_path=None, o2=None, timeout=30, opener=urllib.request.urlopen):
+    """Stiahne, opraví a zapíše playlist. Vráti (kanály, zmenených ID, zmenil sa
+    súbor, názvy vynechaných duplicít). Pri akejkoľvek chybe vyhodí výnimku a starý
+    súbor ostane nedotknutý. `raw_path` dostane playlist bez filtra (na lokálne
+    prefiltrovanie, keď sa zmení zoznam O2 TV), `o2` sú kľúče z o2_keys()."""
     text = download(url, timeout, opener)
-    old = read_text(local_path)
+    old = read_text(raw_path or local_path)
     old_count = count_channels(old) if old else 0
     n = validate(text, old_count)
     fixed, changed = fix_playlist(text)
-    return n, changed, write_atomic(local_path, fixed)
+    if raw_path:
+        write_atomic(raw_path, fixed)
+    shown, removed = filter_duplicates(fixed, o2)
+    return n, changed, write_atomic(local_path, shown), removed
+
+
+def refilter(raw_path, local_path, o2=None):
+    """Znova vyrobí lokálny playlist z uloženého (bez siete). Vráti (zmenil sa
+    súbor, názvy vynechaných duplicít) alebo None, keď uložený playlist chýba."""
+    raw = read_text(raw_path)
+    if not raw:
+        return None
+    shown, removed = filter_duplicates(raw, o2)
+    return write_atomic(local_path, shown), removed
 
 
 # --- inštancie IPTV Simple --------------------------------------------------

@@ -47,6 +47,10 @@ def epg_url():
     return _setting('epg_url', streamlet.DEFAULT_EPG_URL)
 
 
+def dedupe_enabled():
+    return _setting('dedupe_o2', 'true').lower() != 'false'
+
+
 def interval_seconds():
     try:
         hours = int(_setting('refresh_hours', str(DEFAULT_HOURS)))
@@ -63,6 +67,14 @@ def data_dir():
 
 def local_path():
     return os.path.join(data_dir(), streamlet.LOCAL_NAME)
+
+
+def raw_path():
+    return os.path.join(data_dir(), streamlet.RAW_NAME)
+
+
+def o2_playlist_path():
+    return translate(streamlet.O2_PLAYLIST)
 
 
 def local_special():
@@ -137,12 +149,26 @@ def is_due(state, now=None):
     return now - float(state.get('last_ok', 0) or 0) >= interval_seconds()
 
 
+def current_o2_keys():
+    """Kľúče názvov kanálov O2 TV, alebo None (filter vypnutý / export O2 chýba)."""
+    if not dedupe_enabled():
+        return None
+    return streamlet.o2_keys(streamlet.read_text(o2_playlist_path()))
+
+
+def _remember_filter(state, keys, removed):
+    state['filter_sig'] = streamlet.keys_signature(keys)
+    state['removed'] = removed
+
+
 def refresh_playlist(state):
     """Stiahne playlist. Vráti True pri úspechu. Stav sa mení v mieste."""
     now = time.time()
     state['last_try'] = now
+    keys = current_o2_keys()
     try:
-        n, changed, written = streamlet.refresh(playlist_url(), local_path())
+        n, changed, written, removed = streamlet.refresh(
+            playlist_url(), local_path(), raw_path(), keys)
     except Exception as exc:
         state['last_fail'] = '%s' % exc
         log('sťahovanie playlistu zlyhalo: %r' % exc, xbmc.LOGWARNING)
@@ -150,9 +176,25 @@ def refresh_playlist(state):
     state.pop('last_fail', None)
     state['last_ok'] = now
     state['channels'] = n
-    log('playlist: %d kanálov, opravených ID %d, %s'
-        % (n, changed, 'zapísaný' if written else 'bez zmeny'))
+    _remember_filter(state, keys, removed)
+    log('playlist: %d kanálov, opravených ID %d, vynechaných duplicít %d, %s'
+        % (n, changed, len(removed), 'zapísaný' if written else 'bez zmeny'))
     return True
+
+
+def apply_filter(state):
+    """Zoznam O2 TV (alebo nastavenie) sa zmenil: lokálny playlist sa znova
+    vyrobí z uloženého bez sťahovania."""
+    keys = current_o2_keys()
+    if streamlet.keys_signature(keys) == state.get('filter_sig', ''):
+        return
+    res = streamlet.refilter(raw_path(), local_path(), keys)
+    if res is None:
+        return          # uložený playlist ešte nie je, filter sa použije pri sťahovaní
+    written, removed = res
+    _remember_filter(state, keys, removed)
+    log('filter duplicít s O2 TV: vynechaných %d, %s'
+        % (len(removed), 'playlist prepísaný' if written else 'bez zmeny'))
 
 
 def ensure_instance(state):
@@ -177,6 +219,8 @@ def cycle(force=False):
     try:
         if force or is_due(state):
             refresh_playlist(state)
+        else:
+            apply_filter(state)
         ensure_instance(state)
     except Exception as exc:
         log('kolo zlyhalo: %r' % exc, xbmc.LOGERROR)
@@ -193,6 +237,16 @@ def status_lines():
             time.strftime('%d. %m. %Y %H:%M', time.localtime(float(ok))), state.get('channels', '?')))
     else:
         lines.append('Playlist: ešte nebol stiahnutý')
+    if ok:
+        removed = state.get('removed') or []
+        if not dedupe_enabled():
+            lines.append('Filter duplicít s O2 TV: vypnutý')
+        elif removed:
+            lines.append('Vynechané (má ich O2 TV): %s' % ', '.join(removed))
+        elif state.get('filter_sig'):
+            lines.append('Filter duplicít s O2 TV: žiadne duplicity')
+        else:
+            lines.append('Filter duplicít s O2 TV: čaká na export O2 TV')
     if state.get('last_fail'):
         lines.append('Posledná chyba: %s' % state['last_fail'])
     if not iptv_available():

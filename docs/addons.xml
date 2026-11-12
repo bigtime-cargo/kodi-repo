@@ -60,7 +60,7 @@
     <license>GPL-3.0-or-later</license>
   </extension>
 </addon>
-<addon id="service.bigtime.streamlet" name="Bigtime Streamlet" version="1.0.0" provider-name="matus">
+<addon id="service.bigtime.streamlet" name="Bigtime Streamlet" version="1.1.0" provider-name="matus">
   <requires>
     <import addon="xbmc.python" version="3.0.0"/>
     <import addon="pvr.iptvsimple"/>
@@ -72,8 +72,8 @@
   <extension point="xbmc.addon.metadata">
     <summary lang="en_GB">Keeps the Streamlet CZ playlist for IPTV Simple up to date with working EPG ids.</summary>
     <summary lang="sk_SK">Udržiava playlist Streamlet CZ pre IPTV Simple s opravenými ID pre EPG.</summary>
-    <description lang="en_GB">Downloads the Streamlet CZ playlist every few hours, strips the suffix (@SD, @Czechia...) from tvg-id so channels match the open-epg.com guide, and stores it locally. Creates an IPTV Simple instance reading it, only when no instance already reads that file or the Streamlet URL directly. Existing instances are never changed. The only network access is the playlist download.</description>
-    <description lang="sk_SK">Každých pár hodín stiahne playlist Streamlet CZ, odstrihne z tvg-id príponu (@SD, @Czechia...), aby sa kanály zhodovali s programom z open-epg.com, a uloží ho lokálne. Vytvorí inštanciu IPTV Simple, ktorá ho číta, len keď ten súbor ani URL streamletu priamo ešte nič nečíta. Existujúce inštancie sa nikdy nemenia. Jediný sieťový prístup je sťahovanie playlistu.</description>
+    <description lang="en_GB">Downloads the Streamlet CZ playlist every few hours, strips the suffix (@SD, @Czechia...) from tvg-id so channels match the open-epg.com guide, and stores it locally. Creates an IPTV Simple instance reading it, only when no instance already reads that file or the Streamlet URL directly. Channels that O2 TV already provides (it has the archive) are left out. Existing instances are never changed. The only network access is the playlist download.</description>
+    <description lang="sk_SK">Každých pár hodín stiahne playlist Streamlet CZ, odstrihne z tvg-id príponu (@SD, @Czechia...), aby sa kanály zhodovali s programom z open-epg.com, a uloží ho lokálne. Vytvorí inštanciu IPTV Simple, ktorá ho číta, len keď ten súbor ani URL streamletu priamo ešte nič nečíta. Kanály, ktoré už má O2 TV (s archívom), vynechá. Existujúce inštancie sa nikdy nemenia. Jediný sieťový prístup je sťahovanie playlistu.</description>
     <platform>all</platform>
     <license>GPL-3.0-or-later</license>
   </extension>

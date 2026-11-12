@@ -96,8 +96,9 @@ class Refresh(unittest.TestCase):
         shutil.rmtree(self.d)
 
     def test_writes_fixed_playlist(self):
-        n, changed, written = streamlet.refresh('https://x/p.m3u', self.path, opener=opener_for(make_playlist()))
-        self.assertEqual((n, changed, written), (SAMPLE_CHANNELS, SAMPLE_CHANNELS, True))
+        n, changed, written, removed = streamlet.refresh(
+            'https://x/p.m3u', self.path, opener=opener_for(make_playlist()))
+        self.assertEqual((n, changed, written, removed), (SAMPLE_CHANNELS, SAMPLE_CHANNELS, True, []))
         with open(self.path, encoding='utf-8') as f:
             self.assertNotIn('@', f.read())
         self.assertEqual(oct(os.stat(self.path).st_mode & 0o777), '0o644')
@@ -207,6 +208,115 @@ class Instances(unittest.TestCase):
         self.assertEqual(streamlet.read_setting(os.path.join(self.d, 'instance-settings-1.xml'), 'm3uPath'), '/a.m3u')
 
 
+# --- filter duplicít s O2 TV -----------------------------------------------------
+
+O2_SAMPLE = """#EXTM3U
+#EXTINF:-1 tvg-id="1" tvg-name="Jednotka" tvg-chno="1",Jednotka
+plugin://plugin.video.o2tv/?action=play&cid=1
+#EXTINF:-1 tvg-id="2" tvg-name="ČT1" tvg-chno="2",ČT1
+plugin://plugin.video.o2tv/?action=play&cid=2
+#EXTINF:-1 tvg-id="3" tvg-name="Kino Barrandov",Kino Barrandov
+plugin://plugin.video.o2tv/?action=play&cid=3
+#EXTINF:-1 tvg-id="4" tvg-name="Barrandov TV",Barrandov TV
+plugin://plugin.video.o2tv/?action=play&cid=4
+#EXTINF:-1 tvg-id="5" tvg-name="Prima COOL SK",Prima COOL SK
+plugin://plugin.video.o2tv/?action=play&cid=5
+#EXTINF:-1 tvg-id="6" tvg-name="Šláger Original",Šláger Original
+plugin://plugin.video.o2tv/?action=play&cid=6
+#EXTINF:-1 tvg-id="7" tvg-name="KVIFF.TV",KVIFF.TV
+plugin://plugin.video.o2tv/?action=play&cid=7
+#EXTINF:-1 tvg-id="8" tvg-name="Markíza &amp; spol.",Markíza
+plugin://plugin.video.o2tv/?action=play&cid=8
+"""
+
+STREAMLET_SAMPLE = """#EXTM3U
+#EXTINF:-1 tvg-id="HBO.cz",HBO
+http://a/hbo.m3u8
+#EXTINF:-1 tvg-id="CT1.cz",ČT 1
+#EXTVLCOPT:http-user-agent=Mozilla/5.0
+http://a/ct1.m3u8
+#EXTINF:-1 tvg-id="KinoBarrandov.cz",Kino Barrandov
+http://a/kino.m3u8
+#EXTINF:-1 tvg-id="TVBarrandov.cz",TV Barrandov
+http://a/tvb.m3u8
+#EXTINF:-1 tvg-id="PrimaCool.cz",Prima Cool
+http://a/pc.m3u8
+#EXTINF:-1 tvg-id="SlagerOriginal.cz",Slager Original
+http://a/so.m3u8
+#EXTINF:-1 tvg-id="KVIFFTV.cz",KVIFF TV (1080p)
+http://a/kv.m3u8
+#EXTINF:-1 tvg-id="Jednotka.cz",Jednotka [Geo-blocked]
+http://a/j.m3u8
+"""
+
+
+class DedupeO2(unittest.TestCase):
+    def keys(self):
+        return streamlet.o2_keys(O2_SAMPLE)
+
+    def test_matching_rules(self):
+        k = self.keys()
+        for name in ('ČT 1', 'Kino Barrandov', 'TV Barrandov', 'Slager Original',
+                     'KVIFF TV (1080p)', 'Jednotka [Geo-blocked]', 'kino  BARRANDOV'):
+            self.assertTrue(streamlet.name_keys(name) & k, name)
+        for name in ('HBO', 'Prima Cool', 'Prima Krimi', 'ČT 2', 'Sport1'):
+            self.assertFalse(streamlet.name_keys(name) & k, name)
+
+    def test_filter_removes_only_duplicates(self):
+        out, removed = streamlet.filter_duplicates(STREAMLET_SAMPLE, self.keys())
+        self.assertEqual(removed, ['ČT 1', 'Kino Barrandov', 'TV Barrandov', 'Slager Original',
+                                   'KVIFF TV (1080p)', 'Jednotka [Geo-blocked]'])
+        self.assertEqual(streamlet.count_channels(out), 2)
+        self.assertIn('http://a/hbo.m3u8', out)
+        self.assertIn('http://a/pc.m3u8', out)
+        self.assertTrue(out.startswith('#EXTM3U'))
+
+    def test_filter_drops_attached_lines_with_entry(self):
+        out, _ = streamlet.filter_duplicates(STREAMLET_SAMPLE, self.keys())
+        self.assertNotIn('EXTVLCOPT', out)         # patril k ČT 1
+        self.assertNotIn('ct1.m3u8', out)
+
+    def test_no_keys_no_change(self):
+        for keys in (None, set()):
+            out, removed = streamlet.filter_duplicates(STREAMLET_SAMPLE, keys)
+            self.assertEqual((out, removed), (STREAMLET_SAMPLE, []))
+
+    def test_short_or_broken_o2_playlist_ignored(self):
+        self.assertIsNone(streamlet.o2_keys(None))
+        self.assertIsNone(streamlet.o2_keys('<html>'))
+        self.assertIsNone(streamlet.o2_keys('#EXTM3U\n#EXTINF:-1 tvg-name="Jednotka",Jednotka\nu\n'))
+
+    def test_xml_entities_and_short_names(self):
+        self.assertTrue(streamlet.name_keys('Markíza & spol.') & self.keys())
+        self.assertEqual(streamlet.name_keys(': 24'), set())     # príliš krátky názov
+
+    def test_signature_changes_with_keys(self):
+        a = streamlet.keys_signature(self.keys())
+        b = streamlet.keys_signature(streamlet.o2_keys(O2_SAMPLE + '#EXTINF:-1 tvg-name="Nova",Nova\nu\n'))
+        self.assertNotEqual(a, b)
+        self.assertEqual(streamlet.keys_signature(None), '')
+
+    def test_refresh_writes_raw_and_filtered(self):
+        d = tempfile.mkdtemp()
+        try:
+            local, raw = os.path.join(d, 'l.m3u'), os.path.join(d, 'raw.m3u')
+            big = STREAMLET_SAMPLE + make_playlist(25)
+            n, _c, written, removed = streamlet.refresh(
+                'https://x/p.m3u', local, raw, self.keys(), opener=opener_for(big))
+            self.assertEqual(n, 7 + 1 + 25 - 1 + 1)     # 8 ukážkových + 25 vygenerovaných
+            self.assertEqual(len(removed), 6)
+            self.assertTrue(written)
+            self.assertEqual(streamlet.count_channels(open(raw, encoding='utf-8').read()), n)
+            self.assertEqual(streamlet.count_channels(open(local, encoding='utf-8').read()), n - 6)
+            # zmena zoznamu O2: lokálne prefiltrovanie bez siete
+            written, removed = streamlet.refilter(raw, local, None)
+            self.assertEqual(removed, [])
+            self.assertEqual(streamlet.count_channels(open(local, encoding='utf-8').read()), n)
+            self.assertIsNone(streamlet.refilter(os.path.join(d, 'nie.m3u'), local, None))
+        finally:
+            shutil.rmtree(d)
+
+
 # --- služba so stubmi Kodi -----------------------------------------------------
 
 class KodiStub:
@@ -264,11 +374,12 @@ class Core(unittest.TestCase):
         self.calls = 0
         self.fail = False
 
-        def fake_refresh(url, path, timeout=30, opener=None):
+        def fake_refresh(url, path, raw_path=None, o2=None, timeout=30, opener=None):
             self.calls += 1
             if self.fail:
                 raise OSError('bez siete')
-            return self.real_refresh(url, path, opener=opener_for(make_playlist()))
+            return self.real_refresh(url, path, raw_path, o2, opener=opener_for(self.playlist))
+        self.playlist = make_playlist()
         streamlet.refresh = fake_refresh
 
     def tearDown(self):
@@ -352,6 +463,59 @@ class Core(unittest.TestCase):
             with open(os.path.join(ROOT, fn), encoding='utf-8') as f:
                 src = f.read()
             self.assertNotIn('SetAddonEnabled', src)
+
+    # --- filter duplicít v službe ---
+
+    def put_o2_playlist(self, text=O2_SAMPLE):
+        path = self.core.o2_playlist_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(text)
+
+    def local_names(self):
+        text = open(self.core.local_path(), encoding='utf-8').read()
+        return [l.rsplit(',', 1)[1] for l in text.split('\n') if l.startswith('#EXTINF')]
+
+    def test_filter_applied_on_download(self):
+        self.playlist = STREAMLET_SAMPLE + make_playlist(25)
+        self.put_o2_playlist()
+        state = self.core.cycle()
+        names = self.local_names()
+        self.assertNotIn('ČT 1', names)
+        self.assertIn('HBO', names)
+        self.assertEqual(len(state['removed']), 6)
+        self.assertIn('Vynechané', '\n'.join(self.core.status_lines()))
+
+    def test_late_o2_export_refilters_without_download(self):
+        self.playlist = STREAMLET_SAMPLE + make_playlist(25)
+        self.core.cycle()                           # O2 ešte nemá export
+        self.assertIn('ČT 1', self.local_names())
+        self.put_o2_playlist()
+        self.core.cycle()
+        self.assertEqual(self.calls, 1)             # bez nového sťahovania
+        self.assertNotIn('ČT 1', self.local_names())
+        self.assertEqual(len(self.core.load_state()['removed']), 6)
+
+    def test_setting_off_restores_channels(self):
+        self.playlist = STREAMLET_SAMPLE + make_playlist(25)
+        self.put_o2_playlist()
+        self.core.cycle()
+        KODI.settings['dedupe_o2'] = 'false'
+        self.core.cycle()
+        self.assertIn('ČT 1', self.local_names())
+        self.assertEqual(self.calls, 1)
+        self.assertIn('vypnutý', '\n'.join(self.core.status_lines()))
+        KODI.settings['dedupe_o2'] = 'true'
+        self.core.cycle()
+        self.assertNotIn('ČT 1', self.local_names())
+
+    def test_unchanged_o2_does_not_rewrite(self):
+        self.playlist = STREAMLET_SAMPLE + make_playlist(25)
+        self.put_o2_playlist()
+        self.core.cycle()
+        before = os.stat(self.core.local_path()).st_mtime_ns
+        self.core.cycle()
+        self.assertEqual(os.stat(self.core.local_path()).st_mtime_ns, before)
 
     def test_status_lines(self):
         self.core.cycle()

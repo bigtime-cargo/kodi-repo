@@ -13,6 +13,11 @@
           <default>https://www.open-epg.com/files/czech.xml</default>
           <control type="edit" format="string"><heading>URL EPG</heading></control>
         </setting>
+        <setting id="dedupe_o2" type="boolean" label="Vynechať kanály, ktoré už má O2 TV (O2 má archív)">
+          <level>0</level>
+          <default>true</default>
+          <control type="toggle"/>
+        </setting>
         <setting id="refresh_hours" type="integer" label="Obnova playlistu po (hodín)">
           <level>0</level>
           <default>12</default>
