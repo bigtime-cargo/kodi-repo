@@ -14,6 +14,7 @@ import re
 import tempfile
 import unicodedata
 import urllib.request
+import zlib
 import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape
 
@@ -23,6 +24,7 @@ STREAMLET_HOST = 'repo.streamlet.info'
 INSTANCE_NAME = 'Streamlet CZ (Bigtime)'
 SETTINGS_DIR = 'special://userdata/addon_data/pvr.iptvsimple'
 LOCAL_NAME = 'streamlet-cz.m3u'
+EPG_NAME = 'streamlet-epg.xml'      # lokálna kópia EPG (open-epg.com má limit 20 stiahnutí denne)
 RAW_NAME = 'streamlet-raw.m3u'      # opravené ID, ale bez filtra duplicít
 O2_PLAYLIST = 'special://userdata/addon_data/plugin.video.o2tv/playlist.m3u'
 MIN_O2_CHANNELS = 5          # kratší export O2 je podozrivý, filter sa nepoužije
@@ -31,6 +33,9 @@ MIN_KEY = 3                  # kratší kľúč názvu by párovať príliš ve�
 MIN_CHANNELS = 20            # menej = stiahlo sa niečo iné než playlist
 MAX_BYTES = 5 * 1024 * 1024
 KEEP_RATIO = 0.5             # nový playlist s menej ako polovicou kanálov sa zahodí
+MIN_EPG_BYTES = 200 * 1024   # menší súbor nie je celé EPG (napr. stránka s chybou)
+MAX_EPG_BYTES = 300 * 1024 * 1024    # po rozbalení
+EPG_CHUNK = 64 * 1024
 UA = 'Mozilla/5.0 (compatible; service.bigtime.streamlet)'
 
 NASTAVENY = 'NASTAVENY'      # inštancia číta náš lokálny súbor
@@ -43,6 +48,10 @@ _TVG_ID = re.compile(r'(tvg-id=")([^"]*)"')
 
 class PlaylistError(Exception):
     """Stiahnutý obsah nie je použiteľný playlist; starý súbor ostáva."""
+
+
+class EpgError(Exception):
+    """Stiahnutý obsah nie je použiteľné EPG (XMLTV); starý súbor ostáva."""
 
 
 # --- playlist ---------------------------------------------------------------
@@ -121,6 +130,89 @@ def write_atomic(path, text):
             pass
         raise
     return True
+
+
+# --- EPG (XMLTV) ------------------------------------------------------------
+#
+# open-epg.com dovolí stiahnuť každý súbor 20-krát za deň (na IP) a potom namiesto
+# XML vráti stránku "You reached the download limit". IPTV Simple sťahuje EPG pri
+# každom štarte Kodi, takže pri niekoľkých zariadeniach sa limit rýchlo minie a
+# EPG zmizne. Doplnok preto EPG sťahuje sám (raz za pár hodín), overí ho a
+# inštancia IPTV Simple číta lokálny súbor.
+
+def _page_message(head):
+    """Čitateľný začiatok odpovede (pre hlášku o chybe)."""
+    text = re.sub(r'<[^>]+>', ' ', head.decode('utf-8', 'replace'))
+    return ' '.join(text.split())[:120]
+
+
+def download_epg(url, dest, timeout=90, opener=urllib.request.urlopen):
+    """Stiahne XMLTV (aj gzip) po častiach do dočasného súboru, overí ho a atómovo
+    ním nahradí `dest`. Vráti veľkosť v bajtoch. Pri chybe vyhodí výnimku a starý
+    súbor ostane nedotknutý."""
+    if not url.lower().startswith(('https://', 'http://')):
+        raise EpgError('nepodporovaná URL')
+    directory = os.path.dirname(dest)
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix='.epg-', suffix='.tmp', dir=directory)
+    req = urllib.request.Request(url, headers={'User-Agent': UA, 'Accept-Encoding': 'gzip'})
+    try:
+        size, head, tail = 0, b'', b''
+        decoder = None
+        first = True
+        with os.fdopen(fd, 'wb') as out, opener(req, timeout=timeout) as r:
+            while True:
+                chunk = r.read(EPG_CHUNK)
+                if not chunk:
+                    break
+                if first:
+                    first = False
+                    if chunk[:2] == b'\x1f\x8b':
+                        decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
+                if decoder is not None:
+                    try:
+                        chunk = decoder.decompress(chunk)
+                    except zlib.error as exc:
+                        raise EpgError('chybný gzip: %s' % exc)
+                if not chunk:
+                    continue
+                if len(head) < 4096:
+                    head += chunk[:4096 - len(head)]
+                tail = (tail + chunk)[-1024:]
+                size += len(chunk)
+                if size > MAX_EPG_BYTES:
+                    raise EpgError('EPG je väčšie než %d MB' % (MAX_EPG_BYTES // 1048576))
+                out.write(chunk)
+            out.flush()
+            os.fsync(out.fileno())
+        if b'<tv' not in head:
+            raise EpgError('nie je XMLTV: %s' % (_page_message(head) or 'prázdna odpoveď'))
+        if b'</tv>' not in tail:
+            raise EpgError('XMLTV je neúplné (chýba </tv>)')
+        if size < MIN_EPG_BYTES:
+            raise EpgError('EPG má iba %d bajtov' % size)
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, dest)
+        return size
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def epg_valid(path):
+    """Je na disku použiteľná kópia EPG? (rýchla kontrola veľkosti a konca)"""
+    try:
+        size = os.path.getsize(path)
+        if size < MIN_EPG_BYTES:
+            return False
+        with open(path, 'rb') as f:
+            f.seek(max(0, size - 1024))
+            return b'</tv>' in f.read()
+    except OSError:
+        return False
 
 
 # --- filter duplicít s O2 TV --------------------------------------------------
@@ -276,17 +368,21 @@ def status(settings_dir, local_path, translate=_identity):
     return RUCNA if manual else TREBA
 
 
-def build_settings_xml(m3u_path, epg_url, name=INSTANCE_NAME):
+def build_settings_xml(m3u_path, epg_url, name=INSTANCE_NAME, epg_path=None):
     """Minimálna inštancia; ostatné kľúče si Kodi doplní z defaultov.
-    Playlist sa z lokálneho súboru znova načíta každú hodinu."""
+    Playlist sa z lokálneho súboru znova načíta každú hodinu. S `epg_path` číta
+    EPG z lokálneho súboru, inak z `epg_url`."""
+    if epg_path:
+        epg = (('epgPathType', '0'), ('epgPath', epg_path))
+    else:
+        epg = (('epgPathType', '1'), ('epgUrl', epg_url))
     values = (
         ('kodi_addon_instance_name', name),
         ('m3uPathType', '0'),
         ('m3uPath', m3u_path),
         ('m3uRefreshMode', '1'),
         ('m3uRefreshIntervalMins', '60'),
-        ('epgPathType', '1'),
-        ('epgUrl', epg_url),
+    ) + epg + (
         ('epgCache', 'true'),
         ('epgTSOverride', 'true'),
     )
@@ -302,11 +398,11 @@ def free_number(settings_dir):
     return n
 
 
-def create_instance(settings_dir, m3u_path, epg_url, name=INSTANCE_NAME):
+def create_instance(settings_dir, m3u_path, epg_url, name=INSTANCE_NAME, epg_path=None):
     """Zapíše novú inštanciu pod prvým voľným číslom (atómovo). Vráti jej cestu."""
     os.makedirs(settings_dir, exist_ok=True)
     target = os.path.join(settings_dir, 'instance-settings-%d.xml' % free_number(settings_dir))
-    data = build_settings_xml(m3u_path, epg_url, name).encode('utf-8')
+    data = build_settings_xml(m3u_path, epg_url, name, epg_path).encode('utf-8')
     fd, tmp = tempfile.mkstemp(prefix='.bigtime-', suffix='.tmp', dir=settings_dir)
     try:
         with os.fdopen(fd, 'wb') as f:
@@ -324,3 +420,52 @@ def create_instance(settings_dir, m3u_path, epg_url, name=INSTANCE_NAME):
             pass
         raise
     return target
+
+
+def _set(root, setting_id, value):
+    for el in root.iter('setting'):
+        if el.get('id') == setting_id:
+            el.text = value
+            el.attrib.pop('default', None)      # hodnota už nie je predvolená
+            return
+    el = ET.SubElement(root, 'setting', {'id': setting_id})
+    el.text = value
+    el.tail = '\n'
+
+
+def migrate_epg(settings_dir, m3u_local, epg_url, epg_special, translate=_identity):
+    """Naša inštancia (číta náš playlist), ktorá berie EPG priamo z `epg_url`, sa
+    prepne na lokálny súbor `epg_special`. Inštancie, ktoré EPG berú odinakiaľ, sa
+    nemenia. Vráti cestu zmenenej inštancie alebo None."""
+    for _num, path in list_instances(settings_dir):
+        m3u = read_setting(path, 'm3uPath')
+        try:
+            ours = bool(m3u) and _same_file(translate(m3u), m3u_local)
+        except Exception:
+            ours = False
+        if not ours:
+            continue
+        kind = read_setting(path, 'epgPathType')
+        if kind not in (None, '', '1') or read_setting(path, 'epgUrl') != epg_url:
+            continue
+        tree = ET.parse(path)
+        root = tree.getroot()
+        _set(root, 'epgPathType', '0')
+        _set(root, 'epgPath', epg_special)
+        directory = os.path.dirname(path)
+        fd, tmp = tempfile.mkstemp(prefix='.bigtime-', suffix='.tmp', dir=directory)
+        try:
+            with os.fdopen(fd, 'wb') as f:
+                tree.write(f, encoding='utf-8', xml_declaration=True)
+                f.flush()
+                os.fsync(f.fileno())
+            os.chmod(tmp, 0o644)
+            os.replace(tmp, path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+        return path
+    return None

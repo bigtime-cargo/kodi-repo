@@ -18,7 +18,9 @@ HEADING = 'Bigtime Streamlet'
 PVR_IPTV = 'pvr.iptvsimple'
 
 DEFAULT_HOURS = 12
-RETRY_AFTER = 1800           # s po zlyhanom sťahovaní
+RETRY_AFTER = 1800           # s po zlyhanom sťahovaní playlistu
+EPG_RETRY_AFTER = 3 * 3600   # s po zlyhanom sťahovaní EPG (open-epg.com počíta aj pokusy)
+DEFAULT_EPG_HOURS = 12
 
 STATUS_LABELS = {
     streamlet.NASTAVENY: 'nastavená',
@@ -51,6 +53,18 @@ def dedupe_enabled():
     return _setting('dedupe_o2', 'true').lower() != 'false'
 
 
+def epg_local_enabled():
+    return _setting('epg_local', 'true').lower() != 'false'
+
+
+def epg_interval_seconds():
+    try:
+        hours = int(_setting('epg_hours', str(DEFAULT_EPG_HOURS)))
+    except ValueError:
+        hours = DEFAULT_EPG_HOURS
+    return max(1, min(hours, 168)) * 3600
+
+
 def interval_seconds():
     try:
         hours = int(_setting('refresh_hours', str(DEFAULT_HOURS)))
@@ -67,6 +81,14 @@ def data_dir():
 
 def local_path():
     return os.path.join(data_dir(), streamlet.LOCAL_NAME)
+
+
+def epg_path():
+    return os.path.join(data_dir(), streamlet.EPG_NAME)
+
+
+def epg_special():
+    return 'special://userdata/addon_data/%s/%s' % (ADDON_ID, streamlet.EPG_NAME)
 
 
 def raw_path():
@@ -149,6 +171,53 @@ def is_due(state, now=None):
     return now - float(state.get('last_ok', 0) or 0) >= interval_seconds()
 
 
+def is_epg_due(state, now=None):
+    """Treba EPG stiahnuť? Len keď je zapnuté lokálne EPG; po zlyhaní (aj pri
+    limite open-epg.com) najskôr po EPG_RETRY_AFTER; inak keď súbor chýba alebo
+    po intervale od posledného úspechu."""
+    if not epg_local_enabled():
+        return False
+    now = time.time() if now is None else now
+    if state.get('epg_fail') and now - float(state.get('epg_try', 0) or 0) < EPG_RETRY_AFTER:
+        return False
+    if not streamlet.epg_valid(epg_path()):
+        return True
+    return now - float(state.get('epg_ok', 0) or 0) >= epg_interval_seconds()
+
+
+def refresh_epg(state):
+    """Stiahne EPG do addon_data. Vráti True pri úspechu."""
+    now = time.time()
+    state['epg_try'] = now
+    try:
+        size = streamlet.download_epg(epg_url(), epg_path())
+    except Exception as exc:
+        state['epg_fail'] = '%s' % exc
+        log('sťahovanie EPG zlyhalo: %s' % exc, xbmc.LOGWARNING)
+        return False
+    state.pop('epg_fail', None)
+    state['epg_ok'] = now
+    state['epg_size'] = size
+    log('EPG: %.1f MB' % (size / 1048576.0))
+    return True
+
+
+def migrate_epg(state):
+    """Keď je lokálne EPG pripravené, naša inštancia sa prepne z URL na súbor.
+    Prejaví sa po reštarte Kodi (upozorní sa len raz)."""
+    if not epg_local_enabled() or not streamlet.epg_valid(epg_path()):
+        return
+    if not iptv_available() or not os.path.isfile(local_path()):
+        return
+    changed = streamlet.migrate_epg(
+        iptv_dir(), local_path(), epg_url(), epg_special(), translate)
+    if changed:
+        log('inštancia %s číta EPG z lokálneho súboru' % os.path.basename(changed))
+        if not state.get('epg_migrated'):
+            toast('EPG sa bude čítať z lokálneho súboru, reštartuj Kodi')
+        state['epg_migrated'] = time.time()
+
+
 def current_o2_keys():
     """Kľúče názvov kanálov O2 TV, alebo None (filter vypnutý / export O2 chýba)."""
     if not dedupe_enabled():
@@ -203,7 +272,9 @@ def ensure_instance(state):
         return None
     st = streamlet.status(iptv_dir(), local_path(), translate)
     if st == streamlet.TREBA:
-        streamlet.create_instance(iptv_dir(), local_special(), epg_url())
+        use_file = epg_local_enabled() and streamlet.epg_valid(epg_path())
+        streamlet.create_instance(iptv_dir(), local_special(), epg_url(),
+                                  epg_path=epg_special() if use_file else None)
         state['instance_created'] = time.time()
         log('vytvorená inštancia IPTV Simple')
         toast('Streamlet pridaný do IPTV Simple, reštartuj Kodi')
@@ -221,7 +292,13 @@ def cycle(force=False):
             refresh_playlist(state)
         else:
             apply_filter(state)
+        if force and epg_local_enabled():
+            state.pop('epg_fail', None)
+            refresh_epg(state)
+        elif is_epg_due(state):
+            refresh_epg(state)
         ensure_instance(state)
+        migrate_epg(state)
     except Exception as exc:
         log('kolo zlyhalo: %r' % exc, xbmc.LOGERROR)
     save_state(state)
@@ -247,6 +324,17 @@ def status_lines():
             lines.append('Filter duplicít s O2 TV: žiadne duplicity')
         else:
             lines.append('Filter duplicít s O2 TV: čaká na export O2 TV')
+    if not epg_local_enabled():
+        lines.append('EPG: lokálna kópia vypnutá (číta ho IPTV Simple z URL)')
+    elif streamlet.epg_valid(epg_path()):
+        when = state.get('epg_ok')
+        lines.append('EPG: %s, %.1f MB' % (
+            time.strftime('%d. %m. %Y %H:%M', time.localtime(float(when))) if when else '?',
+            float(state.get('epg_size', 0) or 0) / 1048576.0))
+    else:
+        lines.append('EPG: ešte nebolo stiahnuté')
+    if state.get('epg_fail'):
+        lines.append('Chyba EPG: %s' % state['epg_fail'])
     if state.get('last_fail'):
         lines.append('Posledná chyba: %s' % state['last_fail'])
     if not iptv_available():

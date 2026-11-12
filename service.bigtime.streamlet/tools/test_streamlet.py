@@ -1,4 +1,5 @@
 # Offline testy: python3 -m unittest tools.test_streamlet -v  (z adresára doplnku)
+import gzip
 import io
 import json
 import os
@@ -22,6 +23,21 @@ def make_playlist(n=SAMPLE_CHANNELS, suffix='@SD'):
         rows.append('#EXTINF:-1 tvg-id="Kanal%d.cz%s",Kanál %d' % (i, suffix, i))
         rows.append('http://example.invalid/%d.m3u8' % i)
     return '\n'.join(rows) + '\n'
+
+
+def make_epg(n=3000):
+    rows = ['<?xml version="1.0" encoding="UTF-8"?>', '<tv generator-info-name="test">',
+            '<channel id="HBO.cz"><display-name>HBO</display-name></channel>']
+    for i in range(n):
+        rows.append('<programme start="20261112%04d00 +0100" stop="20261112%04d30 +0100" channel="HBO.cz">'
+                    '<title>Porad %d s dlhším popisom, aby súbor mal rozumnú veľkosť</title></programme>'
+                    % (i % 2400, i % 2400, i))
+    rows.append('</tv>')
+    return '\n'.join(rows).encode('utf-8')
+
+
+LIMIT_PAGE = (b'<span style="font-size: 14px;color:red">You reached the download limit for this file '
+              b'for today! Try again tomorrow...<br /></span>')
 
 
 class FakeResponse(io.BytesIO):
@@ -319,6 +335,147 @@ class DedupeO2(unittest.TestCase):
 
 # --- služba so stubmi Kodi -----------------------------------------------------
 
+class DownloadEpg(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.dest = os.path.join(self.tmp, 'sub', 'epg.xml')
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def leftovers(self):
+        d = os.path.dirname(self.dest)
+        return [n for n in os.listdir(d) if n.endswith('.tmp')] if os.path.isdir(d) else []
+
+    def test_plain_xml(self):
+        data = make_epg()
+        size = streamlet.download_epg('https://x/epg.xml', self.dest, opener=opener_for(data))
+        self.assertEqual(size, len(data))
+        self.assertEqual(open(self.dest, 'rb').read(), data)
+        self.assertTrue(streamlet.epg_valid(self.dest))
+        self.assertEqual(self.leftovers(), [])
+
+    def test_gzip_is_unpacked(self):
+        data = make_epg()
+        streamlet.download_epg('https://x/epg.xml', self.dest, opener=opener_for(gzip.compress(data)))
+        self.assertEqual(open(self.dest, 'rb').read(), data)
+
+    def test_limit_page_rejected_and_old_file_kept(self):
+        streamlet.download_epg('https://x/epg.xml', self.dest, opener=opener_for(make_epg()))
+        old = open(self.dest, 'rb').read()
+        for page in (LIMIT_PAGE, gzip.compress(LIMIT_PAGE)):
+            with self.assertRaises(streamlet.EpgError) as cm:
+                streamlet.download_epg('https://x/epg.xml', self.dest, opener=opener_for(page))
+            self.assertIn('download limit', str(cm.exception))
+        self.assertEqual(open(self.dest, 'rb').read(), old)
+        self.assertEqual(self.leftovers(), [])
+
+    def test_truncated_xml_rejected(self):
+        data = make_epg()[:-300]
+        with self.assertRaises(streamlet.EpgError):
+            streamlet.download_epg('https://x/epg.xml', self.dest, opener=opener_for(data))
+        self.assertFalse(os.path.exists(self.dest))
+        self.assertEqual(self.leftovers(), [])
+
+    def test_too_small_rejected(self):
+        with self.assertRaises(streamlet.EpgError):
+            streamlet.download_epg('https://x/epg.xml', self.dest,
+                                   opener=opener_for('<tv>\n</tv>'))
+
+    def test_network_error_keeps_old_file(self):
+        streamlet.download_epg('https://x/epg.xml', self.dest, opener=opener_for(make_epg()))
+        old = open(self.dest, 'rb').read()
+        with self.assertRaises(OSError):
+            streamlet.download_epg('https://x/epg.xml', self.dest, opener=failing_opener)
+        self.assertEqual(open(self.dest, 'rb').read(), old)
+        self.assertEqual(self.leftovers(), [])
+
+    def test_too_big_rejected(self):
+        old = streamlet.MAX_EPG_BYTES
+        streamlet.MAX_EPG_BYTES = 100 * 1024
+        try:
+            with self.assertRaises(streamlet.EpgError):
+                streamlet.download_epg('https://x/epg.xml', self.dest, opener=opener_for(make_epg()))
+        finally:
+            streamlet.MAX_EPG_BYTES = old
+        self.assertEqual(self.leftovers(), [])
+
+    def test_rejects_non_http_url(self):
+        with self.assertRaises(streamlet.EpgError):
+            streamlet.download_epg('file:///etc/passwd', self.dest, opener=opener_for(make_epg()))
+
+    def test_epg_valid_missing(self):
+        self.assertFalse(streamlet.epg_valid(self.dest))
+
+
+class MigrateEpg(unittest.TestCase):
+    URL = 'https://www.open-epg.com/files/czech.xml'
+    LOCAL = '/data/streamlet-cz.m3u'
+    EPG = 'special://userdata/addon_data/service.bigtime.streamlet/streamlet-epg.xml'
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def write(self, n, body):
+        with open(os.path.join(self.tmp, 'instance-settings-%d.xml' % n), 'w', encoding='utf-8') as f:
+            f.write('<settings version="2">\n%s</settings>\n' % body)
+
+    def migrate(self):
+        return streamlet.migrate_epg(self.tmp, self.LOCAL, self.URL, self.EPG)
+
+    def test_our_instance_switched_to_file(self):
+        self.write(1, '<setting id="m3uPath">%s</setting>\n'
+                      '<setting id="epgPathType" default="true">1</setting>\n'
+                      '<setting id="epgPath" default="true" />\n'
+                      '<setting id="epgUrl">%s</setting>\n' % (self.LOCAL, self.URL))
+        self.assertIsNotNone(self.migrate())
+        path = os.path.join(self.tmp, 'instance-settings-1.xml')
+        self.assertEqual(streamlet.read_setting(path, 'epgPathType'), '0')
+        self.assertEqual(streamlet.read_setting(path, 'epgPath'), self.EPG)
+        self.assertEqual(streamlet.read_setting(path, 'm3uPath'), self.LOCAL)
+        self.assertIsNone(self.migrate())           # druhýkrát už nič
+
+    def test_missing_epg_keys_are_added(self):
+        self.write(1, '<setting id="m3uPath">%s</setting>\n'
+                      '<setting id="epgUrl">%s</setting>\n' % (self.LOCAL, self.URL))
+        self.assertIsNotNone(self.migrate())
+        path = os.path.join(self.tmp, 'instance-settings-1.xml')
+        self.assertEqual(streamlet.read_setting(path, 'epgPathType'), '0')
+        self.assertEqual(streamlet.read_setting(path, 'epgPath'), self.EPG)
+
+    def test_foreign_instance_untouched(self):
+        body = ('<setting id="m3uPath">/other/list.m3u</setting>\n'
+                '<setting id="epgPathType">1</setting>\n<setting id="epgUrl">%s</setting>\n' % self.URL)
+        self.write(1, body)
+        before = open(os.path.join(self.tmp, 'instance-settings-1.xml'), 'rb').read()
+        self.assertIsNone(self.migrate())
+        self.assertEqual(open(os.path.join(self.tmp, 'instance-settings-1.xml'), 'rb').read(), before)
+
+    def test_our_instance_with_other_epg_untouched(self):
+        self.write(1, '<setting id="m3uPath">%s</setting>\n'
+                      '<setting id="epgPathType">1</setting>\n'
+                      '<setting id="epgUrl">https://iny.example/epg.xml</setting>\n' % self.LOCAL)
+        self.assertIsNone(self.migrate())
+
+    def test_our_instance_with_local_epg_untouched(self):
+        self.write(1, '<setting id="m3uPath">%s</setting>\n'
+                      '<setting id="epgPathType">0</setting>\n'
+                      '<setting id="epgPath">/moje/epg.xml</setting>\n'
+                      '<setting id="epgUrl">%s</setting>\n' % (self.LOCAL, self.URL))
+        self.assertIsNone(self.migrate())
+        self.assertEqual(streamlet.read_setting(
+            os.path.join(self.tmp, 'instance-settings-1.xml'), 'epgPath'), '/moje/epg.xml')
+
+    def test_create_with_local_epg(self):
+        target = streamlet.create_instance(self.tmp, self.LOCAL, self.URL, epg_path=self.EPG)
+        self.assertEqual(streamlet.read_setting(target, 'epgPathType'), '0')
+        self.assertEqual(streamlet.read_setting(target, 'epgPath'), self.EPG)
+        self.assertIsNone(streamlet.read_setting(target, 'epgUrl'))
+
+
 class KodiStub:
     def __init__(self):
         self.iptv_enabled = True
@@ -382,8 +539,18 @@ class Core(unittest.TestCase):
         self.playlist = make_playlist()
         streamlet.refresh = fake_refresh
 
+        self.real_download_epg = streamlet.download_epg
+        self.epg_calls = 0
+        self.epg_data = make_epg()
+
+        def fake_download_epg(url, dest, timeout=90, opener=None):
+            self.epg_calls += 1
+            return self.real_download_epg(url, dest, opener=opener_for(self.epg_data))
+        streamlet.download_epg = fake_download_epg
+
     def tearDown(self):
         streamlet.refresh = self.real_refresh
+        streamlet.download_epg = self.real_download_epg
         shutil.rmtree(self.tmp)
 
     def instance_files(self):
@@ -516,6 +683,78 @@ class Core(unittest.TestCase):
         before = os.stat(self.core.local_path()).st_mtime_ns
         self.core.cycle()
         self.assertEqual(os.stat(self.core.local_path()).st_mtime_ns, before)
+
+    # --- EPG ---
+
+    def epg_state(self):
+        return self.core.load_state()
+
+    def test_first_cycle_downloads_epg_and_instance_uses_it(self):
+        self.core.cycle()
+        self.assertEqual(self.epg_calls, 1)
+        self.assertTrue(streamlet.epg_valid(self.core.epg_path()))
+        path = os.path.join(self.core.iptv_dir(), 'instance-settings-1.xml')
+        self.assertEqual(streamlet.read_setting(path, 'epgPathType'), '0')
+        self.assertEqual(streamlet.read_setting(path, 'epgPath'), self.core.epg_special())
+
+    def test_epg_not_downloaded_again_within_interval(self):
+        self.core.cycle()
+        self.core.cycle()
+        self.assertEqual(self.epg_calls, 1)
+
+    def test_epg_refreshed_after_interval(self):
+        self.core.cycle()
+        state = self.core.load_state()
+        state['epg_ok'] -= 13 * 3600
+        self.core.save_state(state)
+        self.core.cycle()
+        self.assertEqual(self.epg_calls, 2)
+
+    def test_limit_page_keeps_instance_on_url_and_waits(self):
+        self.epg_data = LIMIT_PAGE
+        self.core.cycle()
+        self.assertEqual(self.epg_calls, 1)
+        self.assertIn('download limit', self.epg_state()['epg_fail'])
+        path = os.path.join(self.core.iptv_dir(), 'instance-settings-1.xml')
+        self.assertEqual(streamlet.read_setting(path, 'epgPathType'), '1')
+        self.assertEqual(streamlet.read_setting(path, 'epgUrl'), streamlet.DEFAULT_EPG_URL)
+        self.core.cycle()           # hneď po zlyhaní sa nepokúša znova
+        self.assertEqual(self.epg_calls, 1)
+
+    def test_epg_retry_after_pause_then_instance_migrates(self):
+        self.epg_data = LIMIT_PAGE
+        self.core.cycle()
+        state = self.core.load_state()
+        state['epg_try'] -= self.core.EPG_RETRY_AFTER + 1
+        self.core.save_state(state)
+        self.epg_data = make_epg()
+        KODI.toasts[:] = []
+        self.core.cycle()
+        self.assertEqual(self.epg_calls, 2)
+        path = os.path.join(self.core.iptv_dir(), 'instance-settings-1.xml')
+        self.assertEqual(streamlet.read_setting(path, 'epgPathType'), '0')
+        self.assertEqual(len(KODI.toasts), 1)
+        self.core.cycle()
+        self.assertEqual(len(KODI.toasts), 1)       # upozornenie len raz
+
+    def test_epg_local_switch_off(self):
+        KODI.settings['epg_local'] = 'false'
+        self.core.cycle()
+        self.assertEqual(self.epg_calls, 0)
+        path = os.path.join(self.core.iptv_dir(), 'instance-settings-1.xml')
+        self.assertEqual(streamlet.read_setting(path, 'epgUrl'), streamlet.DEFAULT_EPG_URL)
+
+    def test_force_retries_epg_despite_failure_wait(self):
+        self.epg_data = LIMIT_PAGE
+        self.core.cycle()
+        self.epg_data = make_epg()
+        self.core.cycle(force=True)
+        self.assertEqual(self.epg_calls, 2)
+        self.assertTrue(streamlet.epg_valid(self.core.epg_path()))
+
+    def test_status_lines_mention_epg(self):
+        self.core.cycle()
+        self.assertTrue(any(l.startswith('EPG:') for l in self.core.status_lines()))
 
     def test_status_lines(self):
         self.core.cycle()
