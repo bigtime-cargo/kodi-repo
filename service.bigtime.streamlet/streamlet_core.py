@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import time
+import urllib.error
 
 import xbmc
 import xbmcaddon
@@ -19,7 +20,8 @@ PVR_IPTV = 'pvr.iptvsimple'
 
 DEFAULT_HOURS = 12
 RETRY_AFTER = 1800           # s po zlyhanom sťahovaní playlistu
-EPG_RETRY_AFTER = 3 * 3600   # s po zlyhanom sťahovaní EPG (open-epg.com počíta aj pokusy)
+EPG_RETRY_AFTER = 3 * 3600   # s po odmietnutí od servera (open-epg.com počíta aj neúspešné pokusy)
+EPG_NET_RETRY_AFTER = 600    # s po chybe siete (server neodpovedal, limit sa nespotrebuje)
 DEFAULT_EPG_HOURS = 12
 
 STATUS_LABELS = {
@@ -178,7 +180,8 @@ def is_epg_due(state, now=None):
     if not epg_local_enabled():
         return False
     now = time.time() if now is None else now
-    if state.get('epg_fail') and now - float(state.get('epg_try', 0) or 0) < EPG_RETRY_AFTER:
+    wait = float(state.get('epg_wait', EPG_RETRY_AFTER) or EPG_RETRY_AFTER)
+    if state.get('epg_fail') and now - float(state.get('epg_try', 0) or 0) < wait:
         return False
     if not streamlet.epg_valid(epg_path()):
         return True
@@ -193,9 +196,14 @@ def refresh_epg(state):
         size = streamlet.download_epg(epg_url(), epg_path())
     except Exception as exc:
         state['epg_fail'] = '%s' % exc
+        # server odpovedal (stránka s limitom, HTTP chyba, zlý obsah) -> dlhá pauza;
+        # sieť sa nepodarilo ani otvoriť -> krátka, nič sa nespotrebovalo
+        answered = isinstance(exc, (streamlet.EpgError, urllib.error.HTTPError))
+        state['epg_wait'] = EPG_RETRY_AFTER if answered else EPG_NET_RETRY_AFTER
         log('sťahovanie EPG zlyhalo: %s' % exc, xbmc.LOGWARNING)
         return False
     state.pop('epg_fail', None)
+    state.pop('epg_wait', None)
     state['epg_ok'] = now
     state['epg_size'] = size
     log('EPG: %.1f MB' % (size / 1048576.0))

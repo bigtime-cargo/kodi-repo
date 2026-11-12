@@ -541,10 +541,13 @@ class Core(unittest.TestCase):
 
         self.real_download_epg = streamlet.download_epg
         self.epg_calls = 0
+        self.epg_net_fail = False
         self.epg_data = make_epg()
 
         def fake_download_epg(url, dest, timeout=90, opener=None):
             self.epg_calls += 1
+            if self.epg_net_fail:
+                raise OSError('bez siete')
             return self.real_download_epg(url, dest, opener=opener_for(self.epg_data))
         streamlet.download_epg = fake_download_epg
 
@@ -736,6 +739,32 @@ class Core(unittest.TestCase):
         self.assertEqual(len(KODI.toasts), 1)
         self.core.cycle()
         self.assertEqual(len(KODI.toasts), 1)       # upozornenie len raz
+
+    def test_epg_network_error_retries_after_ten_minutes(self):
+        self.epg_net_fail = True
+        self.core.cycle()
+        self.assertEqual(self.epg_calls, 1)
+        self.core.cycle()                       # hneď znova nie
+        self.assertEqual(self.epg_calls, 1)
+        state = self.core.load_state()
+        self.assertEqual(state['epg_wait'], self.core.EPG_NET_RETRY_AFTER)
+        state['epg_try'] -= self.core.EPG_NET_RETRY_AFTER + 1
+        self.core.save_state(state)
+        self.epg_net_fail = False
+        self.core.cycle()
+        self.assertEqual(self.epg_calls, 2)
+        self.assertTrue(streamlet.epg_valid(self.core.epg_path()))
+        self.assertNotIn('epg_wait', self.core.load_state())
+
+    def test_epg_server_refusal_waits_three_hours(self):
+        self.epg_data = LIMIT_PAGE
+        self.core.cycle()
+        state = self.core.load_state()
+        self.assertEqual(state['epg_wait'], self.core.EPG_RETRY_AFTER)
+        state['epg_try'] -= self.core.EPG_NET_RETRY_AFTER + 1     # 10 min nestačí
+        self.core.save_state(state)
+        self.core.cycle()
+        self.assertEqual(self.epg_calls, 1)
 
     def test_epg_local_switch_off(self):
         KODI.settings['epg_local'] = 'false'

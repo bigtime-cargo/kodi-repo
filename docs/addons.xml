@@ -60,7 +60,7 @@
     <license>GPL-3.0-or-later</license>
   </extension>
 </addon>
-<addon id="service.bigtime.streamlet" name="Bigtime Streamlet" version="1.2.0" provider-name="matus">
+<addon id="service.bigtime.streamlet" name="Bigtime Streamlet" version="1.2.1" provider-name="matus">
   <requires>
     <import addon="xbmc.python" version="3.0.0"/>
     <import addon="pvr.iptvsimple"/>

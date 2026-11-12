@@ -1,11 +1,11 @@
 # Bigtime Streamlet: pravidelne stiahne playlist streamletu, opraví tvg-id a
 # postará sa o inštanciu IPTV Simple. Jediný sieťový prístup je sťahovanie
-# playlistu (a EPG robí samotný IPTV Simple).
+# playlistu a EPG (XMLTV).
 import xbmc
 
 import streamlet_core as core
 
-START_DELAY = 90        # s po štarte Kodi, kým sa usadí sieť a doplnky
+START_DELAY = 20        # s po štarte Kodi, kým sa usadí sieť (zlyhanie siete sa skúsi znova o 10 min)
 TICK = 300              # s, ako často sa pozrieť, či je čas na obnovu
 
 
