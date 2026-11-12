@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<settings version="1">
+  <section id="service.bigtime.streamlet">
+    <category id="general" label="Streamlet">
+      <group id="1">
+        <setting id="playlist_url" type="string" label="URL playlistu">
+          <level>0</level>
+          <default>https://repo.streamlet.info/playlists/cz.m3u</default>
+          <control type="edit" format="string"><heading>URL playlistu</heading></control>
+        </setting>
+        <setting id="epg_url" type="string" label="URL EPG pre novú inštanciu (platí len pri vytvorení)">
+          <level>0</level>
+          <default>https://www.open-epg.com/files/czech.xml</default>
+          <control type="edit" format="string"><heading>URL EPG</heading></control>
+        </setting>
+        <setting id="refresh_hours" type="integer" label="Obnova playlistu po (hodín)">
+          <level>0</level>
+          <default>12</default>
+          <constraints><minimum>1</minimum><step>1</step><maximum>168</maximum></constraints>
+          <control type="spinner" format="integer"/>
+        </setting>
+      </group>
+    </category>
+  </section>
+</settings>
