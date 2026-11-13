@@ -1,5 +1,7 @@
 # Nastavenie IPTV Simple pre export O2 TV. Bez importov Kodi (testovateľné).
 #
+# Platí rovnako pre O2 TV aj Magio GO (každý má vlastnú značku, playlist a EPG).
+#
 # Pravidlo č. 1: funkčnú konfiguráciu nikdy nemeniť. Ak už nejaká inštancia
 # číta playlist s `plugin://plugin.video.o2tv/`, nerobí sa nič. Nová inštancia
 # vzniká len keď žiadna taká nie je a o2tv už playlist exportoval; cudzie
@@ -14,6 +16,18 @@ MARKER = b'plugin://plugin.video.o2tv/'
 INSTANCE_NAME = 'O2 TV (Bigtime)'
 DEFAULT_PLAYLIST = 'special://userdata/addon_data/plugin.video.o2tv/playlist.m3u'
 DEFAULT_EPG = 'special://userdata/addon_data/plugin.video.o2tv/epg.xml'
+# Magio GO: export z plugin.video.magiogo; obnova každých 15 min je nutná, lebo
+# služba doplnku prepisuje epg.xml (zelená guľička archívu) a IPTV Simple ho
+# načíta len pri obnove playlistu.
+MAGIO_MARKER = b'plugin://plugin.video.magiogo/'
+MAGIO_INSTANCE_NAME = 'Magio GO (Bigtime)'
+MAGIO_PLAYLIST = 'special://userdata/addon_data/plugin.video.magiogo/playlist.m3u'
+MAGIO_EPG = 'special://userdata/addon_data/plugin.video.magiogo/epg.xml'
+MAGIO_EXTRA = (
+    ('m3uRefreshMode', '1'),
+    ('m3uRefreshIntervalMins', '15'),
+    ('epgCache', 'true'),
+)
 SETTINGS_DIR = 'special://userdata/addon_data/pvr.iptvsimple'
 
 NASTAVENY = 'NASTAVENY'     # nejaká inštancia už číta playlist z o2tv
@@ -53,25 +67,25 @@ def read_setting(path, setting_id):
     return None
 
 
-def file_has_marker(path):
-    """True, ak súbor existuje a obsahuje odkaz na plugin o2tv."""
+def file_has_marker(path, marker=MARKER):
+    """True, ak súbor existuje a obsahuje odkaz na plugin (predvolene o2tv)."""
     try:
-        keep = len(MARKER) - 1
+        keep = len(marker) - 1
         tail = b''
         with open(path, 'rb') as f:
             while True:
                 chunk = f.read(1 << 20)
                 if not chunk:
                     return False
-                if MARKER in tail + chunk:
+                if marker in tail + chunk:
                     return True
                 tail = (tail + chunk)[-keep:]
     except OSError:
         return False
 
 
-def is_configured(settings_dir, translate=_identity):
-    """Číta niektorá inštancia IPTV Simple existujúci playlist z o2tv?"""
+def is_configured(settings_dir, translate=_identity, marker=MARKER):
+    """Číta niektorá inštancia IPTV Simple existujúci playlist s danou značkou?"""
     for _num, path in list_instances(settings_dir):
         m3u = read_setting(path, 'm3uPath')
         if not m3u:
@@ -80,20 +94,20 @@ def is_configured(settings_dir, translate=_identity):
             real = translate(m3u)
         except Exception:
             continue
-        if real and file_has_marker(real):
+        if real and file_has_marker(real, marker):
             return True
     return False
 
 
-def status(settings_dir, playlist, translate=_identity):
-    if is_configured(settings_dir, translate):
+def status(settings_dir, playlist, translate=_identity, marker=MARKER):
+    if is_configured(settings_dir, translate, marker):
         return NASTAVENY
-    if file_has_marker(playlist):
+    if file_has_marker(playlist, marker):
         return TREBA
     return CAKA
 
 
-def build_settings_xml(m3u_path, epg_path, name=INSTANCE_NAME):
+def build_settings_xml(m3u_path, epg_path, name=INSTANCE_NAME, extra=()):
     """Minimálna inštancia; ostatné kľúče si Kodi doplní z defaultov."""
     values = (
         ('kodi_addon_instance_name', name),
@@ -104,7 +118,7 @@ def build_settings_xml(m3u_path, epg_path, name=INSTANCE_NAME):
         ('epgTSOverride', 'true'),
         ('catchupEnabled', 'true'),
         ('catchupDays', '7'),
-    )
+    ) + tuple(extra)
     rows = ''.join('    <setting id="%s">%s</setting>\n' % (k, escape(v)) for k, v in values)
     return '<settings version="2">\n' + rows + '</settings>\n'
 
@@ -117,12 +131,12 @@ def free_number(settings_dir):
     return n
 
 
-def create_instance(settings_dir, m3u_path, epg_path, name=INSTANCE_NAME):
+def create_instance(settings_dir, m3u_path, epg_path, name=INSTANCE_NAME, extra=()):
     """Zapíše novú inštanciu pod prvým voľným číslom (atómovo). Vráti jej cestu."""
     os.makedirs(settings_dir, exist_ok=True)
     num = free_number(settings_dir)
     target = os.path.join(settings_dir, 'instance-settings-%d.xml' % num)
-    data = build_settings_xml(m3u_path, epg_path, name).encode('utf-8')
+    data = build_settings_xml(m3u_path, epg_path, name, extra).encode('utf-8')
     fd, tmp = tempfile.mkstemp(prefix='.bigtime-', suffix='.tmp', dir=settings_dir)
     try:
         with os.fdopen(fd, 'wb') as f:
