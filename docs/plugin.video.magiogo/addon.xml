@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<addon id="plugin.video.magiogo" name="Magio GO" version="0.1.2" provider-name="matus">
+  <requires>
+    <import addon="xbmc.python" version="3.0.0"/>
+    <import addon="inputstream.adaptive" version="20.0.0"/>
+  </requires>
+  <extension point="xbmc.python.pluginsource" library="addon.py">
+    <provides>video</provides>
+  </extension>
+  <extension point="xbmc.service" library="service.py" start="startup"/>
+  <extension point="xbmc.addon.metadata">
+    <summary lang="sk">Magio GO (Slovak Telekom)</summary>
+    <description lang="sk">Neoficiálny doplnok pre Magio GO - zoznam kanálov,
+prehrávanie naživo a z archívu, export playlistu a EPG pre IPTV Simple
+Client. Vyžaduje platné predplatné Magio GO.</description>
+    <platform>all</platform>
+  </extension>
+</addon>
