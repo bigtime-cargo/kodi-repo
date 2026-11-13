@@ -184,6 +184,20 @@ class Instances(unittest.TestCase):
         tr = lambda p: self.local if p.startswith('special://') else p
         self.assertEqual(streamlet.status(self.d, self.local, tr), streamlet.NASTAVENY)
 
+    def test_merged_playlist_counts_as_ours(self):
+        merged = os.path.join(self.d, 'bigtime.m3u')
+        with open(merged, 'w') as f:
+            f.write('#EXTM3U\n#BIGTIME-MERGED o2tv=2 streamlet=3\n')
+        self.put(1, m3uPath=merged)
+        self.assertEqual(streamlet.status(self.d, self.local), streamlet.NASTAVENY)
+
+    def test_other_playlist_without_marker_does_not_count(self):
+        other = os.path.join(self.d, 'other.m3u')
+        with open(other, 'w') as f:
+            f.write('#EXTM3U\n#EXTINF:-1,A\nhttp://a\n')
+        self.put(1, m3uPath=other)
+        self.assertEqual(streamlet.status(self.d, self.local), streamlet.TREBA)
+
     def test_manual_url_is_reported_not_replaced(self):
         self.put(2, m3uUrl='https://repo.streamlet.info/playlists/cz.m3u')
         self.assertEqual(streamlet.status(self.d, self.local), streamlet.RUCNA)

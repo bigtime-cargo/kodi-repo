@@ -28,6 +28,22 @@ MAGIO_EXTRA = (
     ('m3uRefreshIntervalMins', '15'),
     ('epgCache', 'true'),
 )
+# Spoločná inštancia: doplnok service.bigtime.setup spojí playlisty a EPG všetkých
+# zdrojov (merge.py), aby Kodi nemalo každú skupinu (Šport...) po jednej za zdroj.
+MERGED_MARKER = b'#BIGTIME-MERGED'
+MERGED_NAME = 'Bigtime TV'
+MERGED_PLAYLIST = 'special://userdata/addon_data/service.bigtime.setup/bigtime.m3u'
+MERGED_EPG = 'special://userdata/addon_data/service.bigtime.setup/bigtime-epg.xml'
+SOURCE_PLAYLISTS = (
+    'special://userdata/addon_data/plugin.video.o2tv/playlist.m3u',
+    'special://userdata/addon_data/plugin.video.magiogo/playlist.m3u',
+    'special://userdata/addon_data/service.bigtime.streamlet/streamlet-cz.m3u',
+)
+SOURCE_MARKERS = (MARKER, MAGIO_MARKER)
+
+SPOJENE = 'SPOJENE'         # nejaká inštancia číta spoločný playlist
+SAMOSTATNE = 'SAMOSTATNE'   # inštancie čítajú zdroje samostatne (staré nastavenie)
+ZIADNA = 'ZIADNA'           # žiadna inštancia nečíta ani spoločný playlist, ani zdroj
 SETTINGS_DIR = 'special://userdata/addon_data/pvr.iptvsimple'
 
 NASTAVENY = 'NASTAVENY'     # nejaká inštancia už číta playlist z o2tv
@@ -68,16 +84,18 @@ def read_setting(path, setting_id):
 
 
 def file_has_marker(path, marker=MARKER):
-    """True, ak súbor existuje a obsahuje odkaz na plugin (predvolene o2tv)."""
+    """True, ak súbor existuje a obsahuje odkaz na plugin (predvolene o2tv).
+    `marker` môže byť aj n-tica, stačí jeden."""
+    markers = marker if isinstance(marker, (tuple, list)) else (marker,)
     try:
-        keep = len(marker) - 1
+        keep = max(len(m) for m in markers) - 1
         tail = b''
         with open(path, 'rb') as f:
             while True:
                 chunk = f.read(1 << 20)
                 if not chunk:
                     return False
-                if marker in tail + chunk:
+                if any(m in tail + chunk for m in markers):
                     return True
                 tail = (tail + chunk)[-keep:]
     except OSError:
@@ -97,6 +115,34 @@ def is_configured(settings_dir, translate=_identity, marker=MARKER):
         if real and file_has_marker(real, marker):
             return True
     return False
+
+
+def _real(path, translate):
+    try:
+        return os.path.normpath(translate(path))
+    except Exception:
+        return None
+
+
+def mode(settings_dir, translate=_identity):
+    """SPOJENE: niektorá inštancia číta spoločný playlist. SAMOSTATNE: číta aspoň
+    jeden zdroj (playlist O2 TV / Magio GO podľa značky, alebo súbor Streamletu).
+    ZIADNA: nič z toho. Cudzie inštancie sa len čítajú."""
+    merged = _real(MERGED_PLAYLIST, translate)
+    sources = {_real(p, translate) for p in SOURCE_PLAYLISTS}
+    standalone = False
+    for _num, path in list_instances(settings_dir):
+        m3u = read_setting(path, 'm3uPath')
+        if not m3u:
+            continue
+        real = _real(m3u, translate)
+        if real is None:
+            continue
+        if real == merged or file_has_marker(real, MERGED_MARKER):
+            return SPOJENE
+        if real in sources or file_has_marker(real, SOURCE_MARKERS):
+            standalone = True
+    return SAMOSTATNE if standalone else ZIADNA
 
 
 def status(settings_dir, playlist, translate=_identity, marker=MARKER):

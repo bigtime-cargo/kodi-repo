@@ -550,15 +550,31 @@ def _same_file(a, b):
     return os.path.normpath(a) == os.path.normpath(b)
 
 
+# service.bigtime.setup spája playlisty O2 TV, Magio GO a Streamletu do jedného
+# súboru (jedna inštancia = jedna sada skupín). Taký playlist má v hlavičke túto
+# značku; kanály streamletu v ňom sú, takže vlastnú inštanciu netreba.
+MERGED_MARKER = b'#BIGTIME-MERGED'
+
+
+def _is_merged(path):
+    try:
+        with open(path, 'rb') as f:
+            return MERGED_MARKER in f.read(4096)
+    except OSError:
+        return False
+
+
 def status(settings_dir, local_path, translate=_identity):
-    """NASTAVENY: nejaká inštancia číta náš súbor. RUCNA: nejaká číta URL
-    streamletu priamo (nemení sa, len sa ohlási). Inak TREBA."""
+    """NASTAVENY: nejaká inštancia číta náš súbor (alebo spoločný playlist
+    service.bigtime.setup). RUCNA: nejaká číta URL streamletu priamo (nemení sa,
+    len sa ohlási). Inak TREBA."""
     manual = False
     for _num, path in list_instances(settings_dir):
         m3u = read_setting(path, 'm3uPath')
         if m3u:
             try:
-                if _same_file(translate(m3u), local_path):
+                real = translate(m3u)
+                if _same_file(real, local_path) or _is_merged(real):
                     return NASTAVENY
             except Exception:
                 pass

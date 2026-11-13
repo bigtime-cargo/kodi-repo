@@ -422,7 +422,7 @@ class IptvMagio(Iptv):
 
 class ZakazPrepinania(unittest.TestCase):
     def test_v_kode_nie_je_prepinanie_doplnkov(self):
-        for name in ('bigtime_core.py', 'service.py', 'default.py', 'patcher.py', 'iptv.py'):
+        for name in ('bigtime_core.py', 'service.py', 'default.py', 'patcher.py', 'iptv.py', 'merge.py'):
             with open(os.path.join(ROOT, name), encoding='utf-8') as f:
                 text = f.read()
             self.assertNotIn('SetAddonEnabled', text, name)
@@ -438,9 +438,16 @@ class Sluzba(unittest.TestCase):
         self.pdir = os.path.join(self.tmp, 'patches')
         self.data = os.path.join(self.tmp, 'data')
         self.sdir = os.path.join(self.tmp, 'pvr')
-        self.playlist = os.path.join(self.tmp, 'o2', 'playlist.m3u')
-        self.magio_playlist = os.path.join(self.tmp, 'magio', 'playlist.m3u')
-        self.magio_epg = os.path.join(self.tmp, 'magio', 'epg.xml')
+        self.ud = os.path.join(self.tmp, 'ud')        # special://userdata
+        ad = os.path.join(self.ud, 'addon_data')
+        self.playlist = os.path.join(ad, 'plugin.video.o2tv', 'playlist.m3u')
+        self.o2_epg = os.path.join(ad, 'plugin.video.o2tv', 'epg.xml')
+        self.magio_playlist = os.path.join(ad, 'plugin.video.magiogo', 'playlist.m3u')
+        self.magio_epg = os.path.join(ad, 'plugin.video.magiogo', 'epg.xml')
+        self.st_playlist = os.path.join(ad, 'service.bigtime.streamlet', 'streamlet-cz.m3u')
+        self.st_epg = os.path.join(ad, 'service.bigtime.streamlet', 'streamlet-epg.xml')
+        self.merged = os.path.join(ad, 'service.bigtime.setup', 'bigtime.m3u')
+        self.merged_epg = os.path.join(ad, 'service.bigtime.setup', 'bigtime-epg.xml')
         self.e1 = make_entry(ORIG, NEW, addon='plugin.a', patches_dir=self.pdir)
         self.e2 = make_entry(ORIG, NEW, addon='service.b', patches_dir=self.pdir)
         write(os.path.join(self.pdir, 'manifest.json'),
@@ -454,9 +461,7 @@ class Sluzba(unittest.TestCase):
         core.addons_dir = lambda: self.addons
         core.data_dir = lambda: self.data
         core.iptv_dir = lambda: self.sdir
-        mapa = {iptv.DEFAULT_PLAYLIST: self.playlist, iptv.MAGIO_PLAYLIST: self.magio_playlist,
-                iptv.MAGIO_EPG: self.magio_epg}
-        core.translate = lambda p: mapa.get(p, p)
+        core.translate = lambda p: p.replace('special://userdata', self.ud)
         patcher.PATCHES_DIR = self.pdir
 
     def tearDown(self):
@@ -560,35 +565,70 @@ class Sluzba(unittest.TestCase):
         self.assertEqual(KODI.notifications, [])
         self.assertEqual(KODI.rpc, [])
 
-    # IPTV
+    # IPTV: spoločný zoznam kanálov
 
-    def test_iptv_vytvori_instanciu_bez_jsonrpc(self):
-        write(self.playlist, Iptv.O2)
-        core.iptv_cycle()
-        self.assertTrue(os.path.isfile(os.path.join(self.sdir, 'instance-settings-1.xml')))
+    O2 = Iptv.O2 + ('#EXTINF:-1 tvg-id="840016" group-title="O2 TV (archív);Šport" tvg-chno="2",Dvojka\n'
+                    'plugin://plugin.video.o2tv/?action=play&cid=840016\n').encode()
+    MAGIO = ('#EXTM3U\n#EXTINF:-1 tvg-id="4621" group-title="Magio GO (archív);Šport" tvg-chno="2",AMC\n'
+             'plugin://plugin.video.magiogo/?action=play&cid=4621\n').encode()
+    STREAMLET = ('#EXTM3U\n#EXTINF:-1 tvg-id="HBO.cz" group-title="Šport" tvg-chno="101",HBO\n'
+                 'http://x.invalid/hbo.m3u8\n').encode()
+
+    def zdroje(self):
+        write(self.playlist, self.O2)
+        write(self.o2_epg, b'<?xml version="1.0"?><tv><channel id="840016"/></tv>')
+        write(self.magio_playlist, self.MAGIO)
+        write(self.magio_epg, b'<?xml version="1.0"?><tv><channel id="4621"/></tv>')
+        write(self.st_playlist, self.STREAMLET)
+
+    def instancie(self):
+        return sorted(os.listdir(self.sdir)) if os.path.isdir(self.sdir) else []
+
+    def test_iptv_spoji_zdroje_a_vytvori_jednu_instanciu(self):
+        self.zdroje()
+        self.assertEqual(core.iptv_cycle(), iptv.SPOJENE)
+        self.assertEqual(self.instancie(), ['instance-settings-1.xml'])
+        vals = {e.get('id'): e.text for e in iptv.ET.parse(
+            os.path.join(self.sdir, 'instance-settings-1.xml')).getroot().iter('setting')}
+        self.assertEqual(vals['kodi_addon_instance_name'], 'Bigtime TV')
+        self.assertEqual(vals['m3uPath'], self.merged)
+        self.assertEqual(vals['epgPath'], self.merged_epg)
+        self.assertEqual(vals['m3uRefreshIntervalMins'], '15')
+        text = read(self.merged).decode()
+        self.assertIn('#BIGTIME-MERGED', text)
+        self.assertEqual(text.count('#EXTINF'), 4)
         self.assertEqual(KODI.rpc, [])
-        self.assertEqual(KODI.notifications, ['IPTV Simple nastavený pre O2 TV — reštartuj Kodi.'])
+        self.assertEqual(KODI.notifications,
+                         ['IPTV Simple nastavený (spoločný zoznam kanálov) — reštartuj Kodi.'])
         self.assertEqual(core.load_state()['reload_needed'], ['pvr.iptvsimple'])
-        self.assertIn('nastavený (čaká na reštart Kodi)', core.status_lines()[-2])
-        core.iptv_cycle()
-        self.assertEqual(KODI.rpc, [])
+        self.assertIn('spoločný zoznam kanálov', core.status_lines()[-1])
+        self.assertIn('čaká na reštart Kodi', core.status_lines()[-1])
+        self.assertEqual(core.iptv_cycle(), iptv.SPOJENE)       # nič nové
+        self.assertEqual(self.instancie(), ['instance-settings-1.xml'])
         self.assertEqual(len(KODI.notifications), 1)
-        self.assertEqual(len(os.listdir(self.sdir)), 1)
 
     def test_iptv_pri_prehravani_tiez_zapise_bez_jsonrpc(self):
-        write(self.playlist, Iptv.O2)
+        self.zdroje()
         KODI.playing = True
         core.iptv_cycle()
         self.assertEqual(KODI.rpc, [])
-        self.assertEqual(len(os.listdir(self.sdir)), 1)
+        self.assertEqual(len(self.instancie()), 1)
 
-    def test_iptv_bez_playlistu_nic(self):
-        core.iptv_cycle()
+    def test_iptv_bez_zdrojov_nic(self):
+        self.assertEqual(core.iptv_cycle(), core.CAKA)
         self.assertFalse(os.path.exists(self.sdir))
+        self.assertFalse(os.path.exists(self.merged))
         self.assertEqual(KODI.rpc, [])
+        self.assertIn('čaká na export', core.status_lines()[-1])
+
+    def test_iptv_staci_jeden_zdroj(self):
+        write(self.magio_playlist, self.MAGIO)
+        core.iptv_cycle()
+        self.assertEqual(len(self.instancie()), 1)
+        self.assertEqual(read(self.merged).decode().count('#EXTINF'), 1)
 
     def test_iptv_nenainstalovany_alebo_vypnuty(self):
-        write(self.playlist, Iptv.O2)
+        self.zdroje()
         KODI.enabled.discard('pvr.iptvsimple')
         self.assertEqual(core.iptv_cycle(), core.NEDOSTUPNY)
         KODI.enabled.add('pvr.iptvsimple')
@@ -597,92 +637,77 @@ class Sluzba(unittest.TestCase):
         self.assertFalse(os.path.exists(self.sdir))
         self.assertEqual(KODI.rpc, [])
 
-    def test_iptv_nakonfigurovane_nemeni(self):
-        write(self.playlist, Iptv.O2)
+    def test_stare_samostatne_instancie_sa_nemenia_a_nic_sa_nespaja(self):
+        self.zdroje()
         other = os.path.join(self.tmp, 'Movies', 'playlist.m3u')
-        write(other, Iptv.O2)
+        write(other, self.O2)                                    # starý export O2 TV
         write(os.path.join(self.sdir, 'instance-settings-1.xml'),
               iptv.build_settings_xml(other, 'e').encode())
+        write(os.path.join(self.sdir, 'instance-settings-2.xml'),
+              iptv.build_settings_xml(self.st_playlist, 'e').encode())
+        before = {n: read(os.path.join(self.sdir, n)) for n in self.instancie()}
+        self.assertEqual(core.iptv_cycle(), iptv.SAMOSTATNE)
+        self.assertEqual({n: read(os.path.join(self.sdir, n)) for n in self.instancie()}, before)
+        self.assertFalse(os.path.exists(self.merged))
+        self.assertEqual(KODI.notifications, [])
+        self.assertIn('samostatné inštancie', core.status_lines()[-1])
+
+    def test_samostatna_instancia_streamletu_staci_na_samostatny_rezim(self):
+        self.zdroje()
+        write(os.path.join(self.sdir, 'instance-settings-1.xml'),
+              iptv.build_settings_xml(self.st_playlist, 'e').encode())
+        self.assertEqual(core.iptv_cycle(), iptv.SAMOSTATNE)
+
+    def test_cudzia_instancia_nebrani(self):
+        self.zdroje()
+        foreign = os.path.join(self.tmp, 'cudzi.m3u')
+        write(foreign, b'#EXTM3U\nhttp://example.invalid/s\n')
+        write(os.path.join(self.sdir, 'instance-settings-1.xml'),
+              iptv.build_settings_xml(foreign, 'e', 'NBA').encode())
+        self.assertEqual(core.iptv_cycle(), iptv.SPOJENE)
+        self.assertEqual(self.instancie(), ['instance-settings-1.xml', 'instance-settings-2.xml'])
+
+    def test_spojena_instancia_sa_pri_zmene_zdroja_obnovi(self):
+        self.zdroje()
         core.iptv_cycle()
-        self.assertEqual(os.listdir(self.sdir), ['instance-settings-1.xml'])
-        self.assertEqual(KODI.rpc, [])
+        first = read(self.merged_epg)
+        write(self.magio_epg, b'<?xml version="1.0"?><tv><channel id="4621"/><channel id="9999"/></tv>')
+        os.utime(self.magio_epg, (1, 1))
+        self.assertEqual(core.iptv_cycle(), iptv.SPOJENE)
+        self.assertNotEqual(read(self.merged_epg), first)
+        self.assertIn(b'9999', read(self.merged_epg))
+        self.assertEqual(len(self.instancie()), 1)
 
-    # IPTV Magio GO
-
-    MAGIO = IptvMagio.MAGIO
-
-    def test_magio_vytvori_instanciu(self):
-        write(self.magio_playlist, self.MAGIO)
-        self.assertEqual(core.iptv_cycle(core.profil_magio()), iptv.NASTAVENY)
-        path = os.path.join(self.sdir, 'instance-settings-1.xml')
-        vals = {s.get('id'): s.text for s in iptv.ET.parse(path).getroot().iter('setting')}
-        self.assertEqual(vals['m3uPath'], self.magio_playlist)
-        self.assertEqual(vals['epgPath'], self.magio_epg)
-        self.assertEqual(vals['m3uRefreshIntervalMins'], '15')
-        self.assertEqual(KODI.notifications, ['IPTV Simple nastavený pre Magio GO — reštartuj Kodi.'])
-        self.assertEqual(KODI.rpc, [])
-        self.assertEqual(core.load_state()['reload_needed'], ['pvr.iptvsimple'])
-        self.assertIn('IPTV Simple (Magio GO): nastavený (čaká na reštart Kodi)',
-                      core.status_lines()[-1])
-        core.iptv_cycle(core.profil_magio())
-        self.assertEqual(len(os.listdir(self.sdir)), 1)
-        self.assertEqual(len(KODI.notifications), 1)
-
-    def test_magio_bez_playlistu_nic(self):
-        write(self.playlist, Iptv.O2)
-        core.iptv_cycle(core.profil_magio())
-        self.assertFalse(os.path.exists(self.sdir))
-        self.assertIn('IPTV Simple (Magio GO): doplnok nie je nainštalovaný', core.status_lines()[-1])
-        KODI.installed.add('plugin.video.magiogo')
-        self.assertIn('IPTV Simple (Magio GO): čaká na export z magiogo', core.status_lines()[-1])
-
-    def test_o2_instancia_nebrani_magio(self):
-        write(self.playlist, Iptv.O2)
-        write(self.magio_playlist, self.MAGIO)
+    def test_po_zmazani_starych_instancii_vznikne_spojena(self):
+        self.zdroje()
         write(os.path.join(self.sdir, 'instance-settings-1.xml'),
               iptv.build_settings_xml(self.playlist, 'e').encode())
-        core.cycle(patches=False)
-        self.assertEqual(sorted(os.listdir(self.sdir)),
-                         ['instance-settings-1.xml', 'instance-settings-2.xml'])
-        self.assertEqual(KODI.notifications, ['IPTV Simple nastavený pre Magio GO — reštartuj Kodi.'])
+        self.assertEqual(core.iptv_cycle(), iptv.SAMOSTATNE)
+        os.remove(os.path.join(self.sdir, 'instance-settings-1.xml'))
+        self.assertEqual(core.iptv_cycle(), iptv.SPOJENE)
+        self.assertEqual(self.instancie(), ['instance-settings-1.xml'])
 
-    def test_cycle_nastavi_obe_a_potom_nic(self):
-        write(self.playlist, Iptv.O2)
-        write(self.magio_playlist, self.MAGIO)
-        core.cycle(patches=False)
-        self.assertEqual(len(os.listdir(self.sdir)), 2)
-        self.assertEqual(len(KODI.notifications), 2)
-        core.cycle(patches=False)
-        self.assertEqual(len(os.listdir(self.sdir)), 2)
-        self.assertEqual(len(KODI.notifications), 2)
-        self.assertEqual(KODI.rpc, [])
+    def test_cycle_zavola_iptv_a_prezije_vynimku(self):
+        self.zdroje()
+        orig = core.iptv_cycle
 
-    def test_rucna_magio_instancia_sa_nemeni(self):
-        write(self.magio_playlist, self.MAGIO)
-        write(os.path.join(self.sdir, 'instance-settings-4.xml'),
-              iptv.build_settings_xml(self.magio_playlist, 'e', 'Magio GO').encode())
-        before = read(os.path.join(self.sdir, 'instance-settings-4.xml'))
-        core.cycle(patches=False)
-        self.assertEqual(os.listdir(self.sdir), ['instance-settings-4.xml'])
-        self.assertEqual(read(os.path.join(self.sdir, 'instance-settings-4.xml')), before)
-        self.assertEqual(KODI.notifications, [])
-
-    def test_magio_pri_vypnutom_iptv_nic(self):
-        write(self.magio_playlist, self.MAGIO)
-        KODI.enabled.discard('pvr.iptvsimple')
-        self.assertEqual(core.iptv_cycle(core.profil_magio()), core.NEDOSTUPNY)
-        self.assertFalse(os.path.exists(self.sdir))
+        def boom():
+            raise RuntimeError('x')
+        core.iptv_cycle = boom
+        try:
+            core.cycle(patches=False)
+        finally:
+            core.iptv_cycle = orig
+        self.assertTrue(any('kolo IPTV zlyhalo' in m for m in KODI.logs))
 
     def test_stav_a_dialog(self):
         write(self.p1, ORIG)
         write(self.p2, ORIG + b'x')
-        KODI.installed.add('plugin.video.o2tv')
         lines = core.status_lines()
-        self.assertEqual(len(lines), 4)
+        self.assertEqual(len(lines), 3)
         self.assertIn('CHÝBA', lines[0])
         self.assertIn('INÉ', lines[1])
-        self.assertIn('IPTV Simple (O2 TV): čaká na export z o2tv', lines[2])
-        self.assertIn('IPTV Simple (Magio GO): doplnok nie je nainštalovaný', lines[3])
+        self.assertIn('IPTV Simple: čaká na export z doplnkov', lines[2])
         self.assertEqual(read(self.p1), ORIG)   # status nič nemení
 
     def test_sluzba_slucka(self):

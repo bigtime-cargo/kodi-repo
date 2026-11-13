@@ -11,6 +11,7 @@ import xbmcgui
 import xbmcvfs
 
 import iptv
+import merge
 import patcher
 
 ADDON_ID = 'service.bigtime.setup'
@@ -22,7 +23,6 @@ PVR_IPTV = 'pvr.iptvsimple'
 ODLOZENE = 'ODLOZENE'       # CHYBA, ale práve niečo prehráva
 VYNIMKA = 'VYNIMKA'         # pri položke nastala chyba
 NEDOSTUPNY = 'NEDOSTUPNY'   # IPTV Simple nie je nainštalovaný alebo je vypnutý
-NEINSTALOVANY = 'NEINSTALOVANY'  # doplnok, ktorého export čakáme, nie je nainštalovaný
 
 LABELS = {
     patcher.OK: 'OK',
@@ -33,11 +33,13 @@ LABELS = {
     ODLOZENE: 'odložená (prehráva sa)',
     VYNIMKA: 'chyba (pozri kodi.log)',
 }
+CAKA = 'CAKA'               # žiadny zdroj (O2 TV, Magio GO, Streamlet) ešte nič neexportoval
 IPTV_LABELS = {
-    iptv.NASTAVENY: 'nastavený',
-    iptv.CAKA: 'čaká na export (treba sa prihlásiť)',
-    NEINSTALOVANY: 'doplnok nie je nainštalovaný',
+    iptv.SPOJENE: 'spoločný zoznam kanálov (O2 TV, Magio GO, Streamlet)',
+    iptv.SAMOSTATNE: 'samostatné inštancie (skupiny sa opakujú) — zmaž ich v IPTV Simple '
+                     'a služba vytvorí jednu spoločnú',
     iptv.TREBA: 'treba nastaviť',
+    CAKA: 'čaká na export z doplnkov (O2 TV, Magio GO, Streamlet — treba sa prihlásiť)',
     NEDOSTUPNY: 'IPTV Simple nie je nainštalovaný alebo je vypnutý',
 }
 
@@ -209,46 +211,66 @@ def iptv_available():
     return bool(xbmc.getCondVisibility('System.HasAddon(%s)' % PVR_IPTV)) and addon_enabled(PVR_IPTV)
 
 
-def profil_o2():
-    return {'nazov': 'O2 TV', 'marker': iptv.MARKER, 'meno': iptv.INSTANCE_NAME,
-            'playlist': iptv.DEFAULT_PLAYLIST, 'epg': iptv.DEFAULT_EPG, 'extra': (),
-            'addon': 'plugin.video.o2tv', 'login': 'o2tv'}
+# zdroje spoločného zoznamu v poradí priority čísel kanálov (O2 TV má 1-99, Streamlet
+# od 101; Magio GO sa prispôsobí, kolízie dostanú čísla od 1000)
+_ADDON_DATA = 'special://userdata/addon_data/'
+SOURCES = (
+    ('o2tv', 'O2 TV', 'plugin.video.o2tv/playlist.m3u', 'plugin.video.o2tv/epg.xml', False),
+    ('streamlet', 'Streamlet', 'service.bigtime.streamlet/streamlet-cz.m3u',
+     'service.bigtime.streamlet/streamlet-epg.xml', True),
+    ('magiogo', 'Magio GO', 'plugin.video.magiogo/playlist.m3u', 'plugin.video.magiogo/epg.xml', False),
+)
 
 
-def profil_magio():
-    return {'nazov': 'Magio GO', 'marker': iptv.MAGIO_MARKER, 'meno': iptv.MAGIO_INSTANCE_NAME,
-            'playlist': iptv.MAGIO_PLAYLIST, 'epg': iptv.MAGIO_EPG, 'extra': iptv.MAGIO_EXTRA,
-            'addon': 'plugin.video.magiogo', 'login': 'magiogo'}
+def merge_sources():
+    return [merge.Source(sid, label, translate(_ADDON_DATA + pl), translate(_ADDON_DATA + epg), filt)
+            for sid, label, pl, epg, filt in SOURCES]
 
 
-def profily():
-    return [profil_o2(), profil_magio()]
+def merge_cycle():
+    """Spojí playlisty a EPG zdrojov do spoločných súborov, keď sa niečo zmenilo.
+    Vráti True, ak sa výstupy prepísali."""
+    return merge.merge(merge_sources(), translate(iptv.MERGED_PLAYLIST), translate(iptv.MERGED_EPG),
+                       os.path.join(data_dir(), 'merge-state.json'), data_dir(), log)
 
 
-def iptv_status(profil=None):
-    p = profil or profil_o2()
-    return iptv.status(iptv_dir(), translate(p['playlist']), translate, p['marker'])
+def iptv_mode():
+    return iptv.mode(iptv_dir(), translate)
 
 
-def iptv_cycle(profil=None):
-    """Nastaví IPTV Simple, ak ešte nič nečíta playlist daného doplnku (predvolene
-    o2tv). Vráti stav iptv.* / NEDOSTUPNY."""
-    p = profil or profil_o2()
-    st = iptv_status(p)
-    if st != iptv.TREBA:
-        return st
+def _have_sources():
+    return any(os.path.isfile(src.playlist) for src in merge_sources())
+
+
+def iptv_cycle():
+    """Udržuje spoločný zoznam kanálov a jeho inštanciu IPTV Simple. Vráti
+    iptv.SPOJENE / SAMOSTATNE / ZIADNA, resp. CAKA / NEDOSTUPNY.
+
+    - SAMOSTATNE (inštancie čítajú zdroje po jednom): nerobí sa nič, nič sa nespája.
+    - SPOJENE: súbory sa podľa potreby znova spoja.
+    - ZIADNA: ak niektorý zdroj už exportoval, spoja sa súbory a vznikne inštancia."""
+    mode = iptv_mode()
+    if mode == iptv.SAMOSTATNE:
+        return mode
+    if mode == iptv.ZIADNA and not _have_sources():
+        return CAKA
+    merge_cycle()
+    if mode == iptv.SPOJENE:
+        return mode
+    if not os.path.isfile(translate(iptv.MERGED_PLAYLIST)):
+        return CAKA
     if not iptv_available():
         log('IPTV Simple nie je nainštalovaný alebo je vypnutý, nič nerobím')
         return NEDOSTUPNY
 
-    path = iptv.create_instance(iptv_dir(), translate(p['playlist']), translate(p['epg']),
-                                p['meno'], p['extra'])
-    log('vytvorená inštancia IPTV Simple (%s): %s' % (p['nazov'], os.path.basename(path)))
+    path = iptv.create_instance(iptv_dir(), translate(iptv.MERGED_PLAYLIST), translate(iptv.MERGED_EPG),
+                                iptv.MERGED_NAME, iptv.MAGIO_EXTRA)
+    log('vytvorená spoločná inštancia IPTV Simple: %s' % os.path.basename(path))
     state = load_state()
     state['reload_needed'] = sorted(set(_reload_list(state)) | {PVR_IPTV})
     save_state(state)
-    toast('IPTV Simple nastavený pre %s — reštartuj Kodi.' % p['nazov'], warning=True)
-    return iptv.NASTAVENY
+    toast('IPTV Simple nastavený (spoločný zoznam kanálov) — reštartuj Kodi.', warning=True)
+    return iptv.SPOJENE
 
 
 def cycle(patches=True):
@@ -258,11 +280,10 @@ def cycle(patches=True):
             patch_cycle()
         except Exception as exc:
             log('kolo záplat zlyhalo: %r' % exc, xbmc.LOGERROR)
-    for p in profily():
-        try:
-            iptv_cycle(p)
-        except Exception as exc:
-            log('kolo IPTV (%s) zlyhalo: %r' % (p['nazov'], exc), xbmc.LOGERROR)
+    try:
+        iptv_cycle()
+    except Exception as exc:
+        log('kolo IPTV zlyhalo: %r' % exc, xbmc.LOGERROR)
 
 
 # --- dialóg skriptu ---------------------------------------------------------
@@ -288,22 +309,18 @@ def status_lines():
         if st == patcher.OK and entry['addon_id'] in reload_needed:
             label = 'OK (čaká na reštart Kodi)'
         lines.append('%s: %s' % (_label(entry), label))
-    for p in profily():
-        try:
-            st = iptv_status(p)
-            if st == iptv.TREBA and not iptv_available():
-                st = NEDOSTUPNY
-            elif st == iptv.CAKA and not xbmc.getCondVisibility('System.HasAddon(%s)' % p['addon']):
-                st = NEINSTALOVANY
-        except Exception as exc:
-            log('IPTV (%s): %r' % (p['nazov'], exc), xbmc.LOGERROR)
-            st = VYNIMKA
-        label = IPTV_LABELS.get(st, LABELS.get(st, st))
-        if st == iptv.CAKA:
-            label = 'čaká na export z %s (treba sa prihlásiť)' % p['login']
-        if st == iptv.NASTAVENY and PVR_IPTV in reload_needed:
-            label += ' (čaká na reštart Kodi)'
-        lines.append('IPTV Simple (%s): %s' % (p['nazov'], label))
+    try:
+        st = iptv_mode()
+        if st == iptv.ZIADNA:
+            st = iptv.CAKA if not _have_sources() else (
+                iptv.TREBA if iptv_available() else NEDOSTUPNY)
+    except Exception as exc:
+        log('IPTV: %r' % exc, xbmc.LOGERROR)
+        st = VYNIMKA
+    label = IPTV_LABELS.get(st, LABELS.get(st, st))
+    if st == iptv.SPOJENE and PVR_IPTV in reload_needed:
+        label += ' (čaká na reštart Kodi)'
+    lines.append('IPTV Simple: %s' % label)
     return lines
 
 
