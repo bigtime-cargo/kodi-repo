@@ -261,6 +261,18 @@ class Hysteresis(unittest.TestCase):
         kept, fails, _d = nba.keep_working(self.items, self.results(True), {self.bad: 5})
         self.assertIn(self.bad, [u for _e, _o, u in kept])
 
+    def test_never_verified_failing_channel_dropped_at_once(self):
+        known = {u for _e, _o, u in self.items if u != self.bad}
+        kept, fails, dropped = nba.keep_working(self.items, self.results(), {}, known)
+        self.assertEqual(dropped, ['ESPN HD (720p)'])
+        self.assertNotIn(self.bad, [u for _e, _o, u in kept])
+
+    def test_known_channel_gets_one_grace(self):
+        known = {u for _e, _o, u in self.items}
+        kept, fails, dropped = nba.keep_working(self.items, self.results(), {}, known)
+        self.assertEqual(dropped, [])
+        self.assertEqual(fails, {self.bad: 1})
+
     def test_missing_result_keeps_and_counter_unchanged(self):
         kept, fails, dropped = nba.keep_working(self.items, {}, {self.bad: 1})
         self.assertEqual(len(kept), len(self.items))
@@ -466,6 +478,34 @@ class Core(unittest.TestCase):
         self.down = ()
         self.core.cycle(force=True)
         self.assertIn('ESPN HD (720p)', self.local_names())
+
+    def test_first_cycle_does_not_include_dead_streams(self):
+        self.down = ('espn.', 'tnt')
+        state = self.core.cycle()
+        names = self.local_names()
+        self.assertNotIn('ESPN HD (720p)', names)
+        self.assertNotIn('TNT (720p)', names)
+        self.assertEqual(sorted(state['dropped']), ['ESPN HD (720p)', 'TNT (720p)'])
+
+    def test_state_from_1_0_0_refreshes_and_drops_dead(self):
+        # stav z verzie 1.0.0: mŕtvy kanál v playliste s jedným zlyhaním, bez `algo`
+        self.core.cycle()
+        state = self.core.load_state()
+        state.pop('algo')
+        state['fails'] = {'http://espn.invalid/index.m3u8': 1}
+        self.core.save_state(state)
+        self.down = ('espn.',)
+        self.assertTrue(self.core.is_due(self.core.load_state()))
+        state = self.core.cycle()
+        self.assertNotIn('ESPN HD (720p)', self.local_names())
+        self.assertEqual(state['algo'], self.core.ALGO)
+
+    def test_aborted_check_keeps_old_playlist(self):
+        self.core.cycle()
+        old = nba.read_text(self.core.local_path())
+        state = self.core.load_state()
+        self.core.refresh_playlist(state, abort=lambda: True)
+        self.assertEqual(nba.read_text(self.core.local_path()), old)
 
     def test_all_streams_down_keeps_old_playlist(self):
         self.core.cycle()

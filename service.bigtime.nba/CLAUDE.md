@@ -17,7 +17,7 @@ Služba: každých `refresh_hours` (6) stiahne `https://repo.streamlet.info/play
 ## Overenie streamov
 - `check_stream`: manifest HLS (aj master → media playlist) a prvých 2000 B posledného segmentu (musí to byť binárny obsah, nie HTML). Vlastný `User-Agent` doplnku, **žiadne predstieranie prehliadača ani VLC** (pozri nižšie).
 - `check_all` – 8 vlákien, 12 s na požiadavku, preruší sa pri `abort` (Kodi sa zatvára).
-- **Hysteréza:** kanál, ktorý neprešiel, ostane v playliste, kým nezlyhá `MAX_FAILS` (2)-krát po sebe (`state.json: fails`, adresa → počet). Po úspechu sa počítadlo zmaže, vyradený kanál sa vráti, keď zase funguje.
+- **Hysteréza (1.0.1):** len kanál, ktorý už raz prešiel a je v playliste (`known_urls`: adresy z lokálneho playlistu bez tých, čo majú v `state.json: fails` počet > 0), dostane jedno zlyhanie zadarmo; vypadne až pri `MAX_FAILS` (2) po sebe. Kanál, ktorý ešte nikdy neprešiel, sa pri zlyhaní vynechá hneď. (V 1.0.0 dostal toleranciu aj nový kanál, takže prvý playlist na telke obsahoval 9 mŕtvych z 31 kandidátov.) Po úspechu sa počítadlo zmaže, vyradený kanál sa vráti, keď zase funguje. Prerušené overenie (Kodi sa zatvára) playlist nemení. `ALGO` v `nba_core.py` zvýšiť pri zmene výberu/overenia: playlist sa potom obnoví hneď, nie až po `refresh_hours`.
 - **Poistky, pri ktorých ostane starý playlist:** zdroj nie je `#EXTM3U` alebo má < 200 kanálov, nenašiel sa žiaden športový kanál, overenie prešlo pri menej než 3 kanáloch (nejde sieť), po overení ostali < 3 kanály. Po zlyhaní nový pokus najskôr o 30 min.
 - Overenie beží zo zariadenia, na ktorom je Kodi, takže geoblokovanie sa posudzuje z jeho IP (z Slovenska 13. 11. 2026: 31 kandidátov, 22 funguje; `[Geo-blocked]` kanály vypadnú samy).
 

@@ -297,25 +297,30 @@ def check_all(items, workers=CHECK_WORKERS, timeout=CHECK_TIMEOUT, opener=urllib
     return {url: res for url, res in results if res is not None}
 
 
-def keep_working(items, results, fails=None, max_fails=MAX_FAILS):
-    """Vyberie kanály, ktoré prešli overením. Kanál, ktorý neprešiel, ostane, kým
-    nezlyhá `max_fails`-krát po sebe (krátky výpadok ho nevyhodí). Vráti (kanály,
-    nový počítadlo zlyhaní {adresa: n}, názvy vynechaných). Kanál bez výsledku
+def keep_working(items, results, fails=None, known=None, max_fails=MAX_FAILS):
+    """Vyberie kanály, ktoré prešli overením. `known` = adresy, ktoré už raz prešli
+    a sú v playliste (None = všetky). Kanál z `known`, ktorý neprešiel, ostane, kým
+    nezlyhá `max_fails`-krát po sebe (krátky výpadok ho nevyhodí). Kanál, ktorý ešte
+    nikdy neprešiel (nový alebo už raz zlyhal), sa pri zlyhaní vynechá hneď, inak by
+    sa nefunkčné kanály dostali do playlistu hneď pri prvom spustení. Vráti (kanály,
+    nové počítadlo zlyhaní {adresa: n}, názvy vynechaných). Kanál bez výsledku
     (overenie sa prerušilo) ostáva a počítadlo sa nemení."""
     fails = fails or {}
     kept, new_fails, dropped = [], {}, []
     for item in items:
-        res = results.get(item[2])
+        url = item[2]
+        res = results.get(url)
+        was_ok = known is None or url in known
         if res is None:
-            if fails.get(item[2]):
-                new_fails[item[2]] = fails[item[2]]
+            if fails.get(url):
+                new_fails[url] = fails[url]
             kept.append(item)
         elif res[0]:
             kept.append(item)
         else:
-            n = int(fails.get(item[2], 0)) + 1
-            new_fails[item[2]] = n
-            if n < max_fails:
+            n = int(fails.get(url, 0)) + 1
+            new_fails[url] = n
+            if was_ok and n < max_fails:
                 kept.append(item)
             else:
                 dropped.append(entry_name(item[0]))

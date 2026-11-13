@@ -18,6 +18,7 @@ TAG = '[%s] ' % ADDON_ID
 HEADING = 'Bigtime NBA'
 PVR_IPTV = 'pvr.iptvsimple'
 
+ALGO = 2                     # zvýšiť, keď sa zmení výber/overenie: playlist sa hneď obnoví
 DEFAULT_HOURS = 6
 RETRY_AFTER = 1800           # s po zlyhanom sťahovaní playlistu
 EPG_RETRY_AFTER = 3 * 3600   # s po odmietnutí od servera (open-epg.com počíta aj neúspešné pokusy)
@@ -171,7 +172,7 @@ def is_due(state, now=None):
     now = time.time() if now is None else now
     if state.get('last_fail') and now - float(state.get('last_try', 0) or 0) < RETRY_AFTER:
         return False
-    if not os.path.isfile(local_path()):
+    if not os.path.isfile(local_path()) or state.get('algo') != ALGO:
         return True
     return now - float(state.get('last_ok', 0) or 0) >= interval_seconds()
 
@@ -225,6 +226,14 @@ def migrate_epg(state):
         state['epg_migrated'] = time.time()
 
 
+def known_urls(fails):
+    """Adresy, ktoré už raz prešli overením a sú v lokálnom playliste (bez tých, čo
+    po poslednom overení zlyhali)."""
+    text = nba.read_text(local_path())
+    urls = {u for _e, _o, u in nba.parse(text)} if text else set()
+    return urls - {u for u, n in (fails or {}).items() if n}
+
+
 def refresh_playlist(state, abort=lambda: False, opener=None, check_opener=None):
     """Stiahne americký playlist, vyberie NBA kanály, overí ich a zapíše lokálny
     playlist. Vráti True pri úspechu. Stav sa mení v mieste; pri chybe ostáva starý
@@ -244,8 +253,12 @@ def refresh_playlist(state, abort=lambda: False, opener=None, check_opener=None)
                 raise nba.PlaylistError(
                     'overenie prešlo iba %d z %d kanálov (nejde sieť?), nechávam starý playlist'
                     % (ok, len(chosen)))
-            kept, fails, dropped = nba.keep_working(chosen, results, state.get('fails'))
-            state['fails'] = fails
+            if len(results) != len(chosen):
+                raise nba.PlaylistError('overenie streamov bolo prerušené')
+            fails = state.get('fails') or {}
+            kept, new_fails, dropped = nba.keep_working(
+                chosen, results, fails, known_urls(fails))
+            state['fails'] = new_fails
         else:
             kept = chosen
             state['fails'] = {}
@@ -262,6 +275,7 @@ def refresh_playlist(state, abort=lambda: False, opener=None, check_opener=None)
     state['channels'] = len(kept)
     state['dropped'] = dropped
     state['chno'] = chno_start()
+    state['algo'] = ALGO
     log('playlist: kandidátov %d, v playliste %d, vynechaných %d, %s'
         % (len(chosen), len(kept), len(dropped), 'zapísaný' if written else 'bez zmeny'))
     return True
