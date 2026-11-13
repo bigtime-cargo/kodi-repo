@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <addons>
-<addon id="plugin.video.o2tv" name="O2 TV SK" version="1.3.7" provider-name="matus">
+<addon id="plugin.video.o2tv" name="O2 TV SK" version="1.3.8" provider-name="matus">
   <requires>
     <import addon="xbmc.python" version="3.0.0"/>
     <import addon="inputstream.adaptive" version="20.0.0"/>
@@ -60,7 +60,7 @@
     <license>GPL-3.0-or-later</license>
   </extension>
 </addon>
-<addon id="service.bigtime.streamlet" name="Bigtime Streamlet" version="1.2.1" provider-name="matus">
+<addon id="service.bigtime.streamlet" name="Bigtime Streamlet" version="1.3.0" provider-name="matus">
   <requires>
     <import addon="xbmc.python" version="3.0.0"/>
     <import addon="pvr.iptvsimple"/>
@@ -70,10 +70,10 @@
     <provides>executable</provides>
   </extension>
   <extension point="xbmc.addon.metadata">
-    <summary lang="en_GB">Keeps the Streamlet CZ playlist for IPTV Simple up to date with working EPG ids.</summary>
-    <summary lang="sk_SK">Udržiava playlist Streamlet CZ pre IPTV Simple s opravenými ID pre EPG.</summary>
-    <description lang="en_GB">Downloads the Streamlet CZ playlist every few hours, strips the suffix (@SD, @Czechia...) from tvg-id so channels match the open-epg.com guide, and stores it locally. Creates an IPTV Simple instance reading it, only when no instance already reads that file or the Streamlet URL directly. Channels that O2 TV already provides (it has the archive) are left out. Existing instances are never changed, except this addon's own instance, which is switched to the locally stored guide. The guide (XMLTV) is downloaded by the addon itself once in a while, because open-epg.com limits downloads to 20 a day per IP.</description>
-    <description lang="sk_SK">Každých pár hodín stiahne playlist Streamlet CZ, odstrihne z tvg-id príponu (@SD, @Czechia...), aby sa kanály zhodovali s programom z open-epg.com, a uloží ho lokálne. Vytvorí inštanciu IPTV Simple, ktorá ho číta, len keď ten súbor ani URL streamletu priamo ešte nič nečíta. Kanály, ktoré už má O2 TV (s archívom), vynechá. Existujúce inštancie sa nikdy nemenia, okrem vlastnej inštancie doplnku, ktorá sa prepne na lokálne uložené EPG. EPG (XMLTV) si doplnok sťahuje sám raz za pár hodín, lebo open-epg.com dovolí len 20 stiahnutí denne na IP.</description>
+    <summary lang="en_GB">Keeps the Streamlet CZ playlist for IPTV Simple up to date with working EPG ids, grouped by theme and numbered from 101.</summary>
+    <summary lang="sk_SK">Udržiava playlist Streamlet CZ pre IPTV Simple s opravenými ID pre EPG, v skupinách podľa témy a číslovaný od 101.</summary>
+    <description lang="en_GB">Downloads the Streamlet CZ playlist every few hours, strips the suffix (@SD, @Czechia...) from tvg-id so channels match the open-epg.com guide, and stores it locally. Creates an IPTV Simple instance reading it, only when no instance already reads that file or the Streamlet URL directly. Channels that O2 TV already provides (it has the archive) are left out. Existing instances are never changed, except this addon's own instance, which is switched to the locally stored guide. The guide (XMLTV) is downloaded by the addon itself once in a while, because open-epg.com limits downloads to 20 a day per IP. Channels are grouped by theme (general, news, movies and series, documentaries, sport, kids, music, regional, other) and numbered from 101 (tvg-chno), so they do not mix with O2 TV (1-99). Optionally, channels without a guide (per the local EPG copy) can be hidden.</description>
+    <description lang="sk_SK">Každých pár hodín stiahne playlist Streamlet CZ, odstrihne z tvg-id príponu (@SD, @Czechia...), aby sa kanály zhodovali s programom z open-epg.com, a uloží ho lokálne. Vytvorí inštanciu IPTV Simple, ktorá ho číta, len keď ten súbor ani URL streamletu priamo ešte nič nečíta. Kanály, ktoré už má O2 TV (s archívom), vynechá. Existujúce inštancie sa nikdy nemenia, okrem vlastnej inštancie doplnku, ktorá sa prepne na lokálne uložené EPG. EPG (XMLTV) si doplnok sťahuje sám raz za pár hodín, lebo open-epg.com dovolí len 20 stiahnutí denne na IP. Kanály zaradí do skupín podľa témy (všeobecné, správy, filmy a seriály, dokumenty a životný štýl, šport, deti, hudba, regionálne, ostatné) a očísluje od 101 (tvg-chno), aby sa nemiešali s O2 TV (1-99). Voliteľne skryje kanály bez EPG (podľa lokálnej kópie EPG).</description>
     <platform>all</platform>
     <license>GPL-3.0-or-later</license>
   </extension>

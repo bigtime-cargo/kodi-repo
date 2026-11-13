@@ -333,6 +333,336 @@ class DedupeO2(unittest.TestCase):
             shutil.rmtree(d)
 
 
+# --- skupiny, číslovanie, skrytie bez EPG -----------------------------------------
+
+GROUPS_SAMPLE = (
+    '#EXTM3U\n'
+    '#EXTINF:-1 tvg-id="Sport1.cz",Sport1\nhttp://a/s1.m3u8\n'
+    '#EXTINF:-1 tvg-logo="http://x/l,b.png" tvg-id="HBO.cz",HBO\n'
+    '#EXTVLCOPT:http-user-agent=Mozilla/5.0 (X11, Linux x86_64) AppleWebKit, Gecko\n'
+    'http://a/hbo.m3u8\n'
+    '#EXTINF:-1 tvg-id="Markiza.cz",Markíza\nhttp://a/m.m3u8\n'
+    '#EXTINF:-1 tvg-id="Jednotka.cz",Jednotka\nhttp://a/j.m3u8\n'
+    '#EXTINF:-1 tvg-id="CT24.cz",ČT24\nhttp://a/ct24.m3u8\n'
+)
+
+
+def extinf_rows(text):
+    return [l for l in text.split('\n') if l.startswith('#EXTINF')]
+
+
+def attr(line, name):
+    import re
+    return re.findall(r'(?:^|\s)%s="([^"]*)"' % re.escape(name), line)
+
+
+class Groups(unittest.TestCase):
+    def test_split_extinf_name_is_after_comma_outside_quotes(self):
+        self.assertEqual(streamlet.split_extinf('#EXTINF:-1 tvg-id="A",Meno'),
+                         ('#EXTINF:-1 tvg-id="A"', 'Meno'))
+        self.assertEqual(streamlet.split_extinf('#EXTINF:-1 tvg-name="A, B" tvg-id="A",Meno, dalsie'),
+                         ('#EXTINF:-1 tvg-name="A, B" tvg-id="A"', 'Meno, dalsie'))
+        self.assertEqual(streamlet.split_extinf('#EXTINF:-1,Len meno'), ('#EXTINF:-1', 'Len meno'))
+        self.assertEqual(streamlet.split_extinf('#EXTINF:-1'), ('#EXTINF:-1', ''))
+        # nevyvážené úvodzovky: záloha = posledná čiarka
+        self.assertEqual(streamlet.split_extinf('#EXTINF:-1 tvg-id="A,Meno'), ('#EXTINF:-1 tvg-id="A', 'Meno'))
+
+    def test_with_attrs_adds_both(self):
+        out = streamlet.with_attrs('#EXTINF:-1 tvg-id="A.cz",Meno', 'Šport', 105)
+        self.assertEqual(out, '#EXTINF:-1 tvg-id="A.cz" group-title="Šport" tvg-chno="105",Meno')
+
+    def test_with_attrs_replaces_existing_never_duplicates(self):
+        line = ('#EXTINF:-1 group-title="Stara" tvg-id="A.cz" tvg-chno="7" tvg-chno="8" '
+                'group-title="Iná",Meno')
+        out = streamlet.with_attrs(line, 'Deti', 120)
+        self.assertEqual(attr(out, 'group-title'), ['Deti'])
+        self.assertEqual(attr(out, 'tvg-chno'), ['120'])
+        self.assertEqual(attr(out, 'tvg-id'), ['A.cz'])
+        self.assertTrue(out.endswith(',Meno'))
+
+    def test_with_attrs_keeps_crlf_and_comma_in_name(self):
+        out = streamlet.with_attrs('#EXTINF:-1 tvg-id="A",Meno, dalsie\r', 'Hudba', 1)
+        self.assertTrue(out.endswith(',Meno, dalsie\r'))
+        self.assertEqual(attr(out, 'group-title'), ['Hudba'])
+
+    def test_add_groups_only_touches_extinf_lines(self):
+        out, n = streamlet.add_groups(GROUPS_SAMPLE, 101)
+        self.assertEqual(n, 5)
+        before, after = GROUPS_SAMPLE.split('\n'), out.split('\n')
+        self.assertEqual(len(before), len(after))
+        for b, a in zip(before, after):
+            if not b.startswith('#EXTINF'):
+                self.assertEqual(a, b)
+
+    def test_extvlcopt_with_commas_is_not_a_name(self):
+        out, _ = streamlet.add_groups(GROUPS_SAMPLE, 101)
+        self.assertIn('#EXTVLCOPT:http-user-agent=Mozilla/5.0 (X11, Linux x86_64) AppleWebKit, Gecko', out)
+        hbo = [l for l in extinf_rows(out) if l.endswith(',HBO')][0]
+        self.assertEqual(attr(hbo, 'group-title'), ['Filmy a seriály'])
+        self.assertIn('tvg-logo="http://x/l,b.png"', hbo)
+
+    def test_numbers_follow_theme_then_name(self):
+        out, _ = streamlet.add_groups(GROUPS_SAMPLE, 101)
+        rows = {l.rsplit(',', 1)[1]: (attr(l, 'tvg-chno')[0], attr(l, 'group-title')[0])
+                for l in extinf_rows(out)}
+        self.assertEqual(rows['Jednotka'], ('101', 'Všeobecné'))
+        self.assertEqual(rows['Markíza'], ('102', 'Všeobecné'))
+        self.assertEqual(rows['ČT24'], ('103', 'Správy'))
+        self.assertEqual(rows['HBO'], ('104', 'Filmy a seriály'))
+        self.assertEqual(rows['Sport1'], ('105', 'Šport'))
+        # poradie riadkov v súbore ostalo
+        self.assertEqual([l.rsplit(',', 1)[1] for l in extinf_rows(out)],
+                         ['Sport1', 'HBO', 'Markíza', 'Jednotka', 'ČT24'])
+
+    def test_custom_start_and_stable_ties(self):
+        text = '#EXTM3U\n' + ''.join('#EXTINF:-1 tvg-id="X%d",Rovnaký\nhttp://a/%d\n' % (i, i)
+                                      for i in range(3))
+        out, _ = streamlet.add_groups(text, 5000)
+        self.assertEqual([attr(l, 'tvg-chno')[0] for l in extinf_rows(out)], ['5000', '5001', '5002'])
+        self.assertEqual([attr(l, 'tvg-id')[0] for l in extinf_rows(out)], ['X0', 'X1', 'X2'])
+
+    def test_idempotent(self):
+        once, _ = streamlet.add_groups(GROUPS_SAMPLE, 101)
+        twice, _ = streamlet.add_groups(once, 101)
+        self.assertEqual(once, twice)
+
+    def test_no_channels(self):
+        self.assertEqual(streamlet.add_groups('#EXTM3U\n', 101), ('#EXTM3U\n', 0))
+
+
+def make_epg_ids(ids, filler=3000):
+    ids = list(ids)
+    rows = ['<?xml version="1.0" encoding="UTF-8"?>', '<tv generator-info-name="test">']
+    for i in ids:
+        rows.append('<channel id="%s"><display-name lang="cs">%s</display-name></channel>' % (i, i))
+    for n in range(filler):
+        rows.append('<programme start="2026111200%04d +0100" stop="2026111201%04d +0100" channel="%s">'
+                    '<title>Porad %d s dlhším popisom, aby súbor mal rozumnú veľkosť</title></programme>'
+                    % (n % 6000, n % 6000, ids[n % len(ids)], n))
+    rows.append('</tv>')
+    return '\n'.join(rows).encode('utf-8')
+
+
+class EpgIds(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.path = os.path.join(self.tmp, 'epg.xml')
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def write(self, data):
+        with open(self.path, 'wb') as f:
+            f.write(data)
+
+    def test_reads_ids_case_insensitive_unescaped(self):
+        self.write(make_epg_ids(['HBO.cz', 'A&amp;B.cz', 'ČT1.cz']))
+        self.assertEqual(streamlet.epg_channel_ids(self.path), {'hbo.cz', 'a&b.cz', 'čt1.cz'})
+
+    def test_programme_channel_attribute_is_not_an_id(self):
+        self.write(b'<tv><programme channel="Len.cz" start="1"></programme><channel id="Ano.cz"></channel></tv>')
+        self.assertEqual(streamlet.epg_channel_ids(self.path), {'ano.cz'})
+
+    def test_single_quotes_and_other_attributes_first(self):
+        self.write(b"<tv><channel lang='cs' id='Jedna.cz'></channel><channel\n id = \"Dve.cz\"></channel></tv>")
+        self.assertEqual(streamlet.epg_channel_ids(self.path), {'jedna.cz', 'dve.cz'})
+
+    def test_tag_split_on_chunk_boundary(self):
+        ids = ['Kanal%03d.cz' % i for i in range(60)]
+        self.write(make_epg_ids(ids, filler=40))
+        for chunk in (1, 2, 3, 7, 8, 9, 50, 64, 100, 1000):
+            with self.subTest(chunk=chunk):
+                self.assertEqual(streamlet.epg_channel_ids(self.path, chunk),
+                                 {i.casefold() for i in ids})
+
+    def test_missing_file_is_none(self):
+        self.assertIsNone(streamlet.epg_channel_ids(os.path.join(self.tmp, 'nie.xml')))
+
+    def test_garbage_gives_empty_set(self):
+        self.write(b'\x00\xff<channel id=\xff\xfe' * 100)
+        self.assertEqual(streamlet.epg_channel_ids(self.path), set())
+
+    def test_signature_changes_with_file(self):
+        self.assertEqual(streamlet.epg_signature(self.path), 'none')
+        self.write(b'x' * 10)
+        a = streamlet.epg_signature(self.path)
+        self.write(b'x' * 11)
+        self.assertNotEqual(a, streamlet.epg_signature(self.path))
+
+
+def playlist_with_ids(ids, names=None):
+    rows = ['#EXTM3U']
+    for n, i in enumerate(ids):
+        name = names[n] if names else 'Kanál %d' % n
+        tvg = ' tvg-id="%s"' % i if i is not None else ''
+        rows.append('#EXTINF:-1%s,%s' % (tvg, name))
+        rows.append('#EXTVLCOPT:http-user-agent=A, B')
+        rows.append('http://example.invalid/%d.m3u8' % n)
+    return '\n'.join(rows) + '\n'
+
+
+EPG_IDS = {('k%d.cz' % i) for i in range(30)}
+
+
+class HideNoEpg(unittest.TestCase):
+    def ids(self, n):
+        return ['K%d.cz' % i for i in range(n)]
+
+    def test_removes_channels_without_epg(self):
+        text = playlist_with_ids(self.ids(30) + ['Nema.cz', 'Ani.cz'])
+        out, removed, note = streamlet.hide_no_epg(text, EPG_IDS)
+        self.assertIsNone(note)
+        self.assertEqual(removed, ['Kanál 30', 'Kanál 31'])
+        self.assertEqual(streamlet.count_channels(out), 30)
+        self.assertNotIn('Nema.cz', out)
+        self.assertNotIn('/30.m3u8', out)       # adresa a #EXTVLCOPT odišli so záznamom
+
+    def test_suffix_and_case_ignored(self):
+        text = playlist_with_ids(['K1.cz@SD', 'k2.CZ'] + self.ids(30)[3:])
+        out, removed, _ = streamlet.hide_no_epg(text, EPG_IDS)
+        self.assertEqual(removed, [])
+        self.assertEqual(out, text)
+
+    def test_channel_without_tvg_id_is_removed(self):
+        text = playlist_with_ids(self.ids(30) + [None, ''])
+        out, removed, note = streamlet.hide_no_epg(text, EPG_IDS)
+        self.assertIsNone(note)
+        self.assertEqual(removed, ['Kanál 30', 'Kanál 31'])
+
+    def test_missing_unreadable_or_small_epg_removes_nothing(self):
+        text = playlist_with_ids(self.ids(30) + ['Nema.cz'])
+        for ids in (None, set(), {'k1.cz'}, {('k%d.cz' % i) for i in range(9)}):
+            with self.subTest(ids=ids):
+                out, removed, note = streamlet.hide_no_epg(text, ids)
+                self.assertEqual((out, removed), (text, []))
+                self.assertTrue(note)
+
+    def test_exactly_min_epg_ids_is_enough(self):
+        text = playlist_with_ids(self.ids(10) + ['Nema.cz'] * 20)
+        # 10 ID stačí, ale vyradilo by to 20 z 30 (67 %) a ostalo by menej než MIN_CHANNELS
+        out, removed, note = streamlet.hide_no_epg(text, {('k%d.cz' % i) for i in range(10)})
+        self.assertEqual(removed, [])
+        self.assertNotIn('ID kanálov', note)
+
+    def test_more_than_70_percent_removes_nothing(self):
+        text = playlist_with_ids(self.ids(60))
+        out, removed, note = streamlet.hide_no_epg(text, {('k%d.cz' % i) for i in range(10)})
+        self.assertEqual((out, removed), (text, []))
+        self.assertIn('50 z 60', note)
+
+    def test_exactly_70_percent_is_still_allowed(self):
+        text = playlist_with_ids(self.ids(100))
+        ids = {('k%d.cz' % i) for i in range(30)}
+        out, removed, note = streamlet.hide_no_epg(text, ids)
+        self.assertIsNone(note)
+        self.assertEqual(len(removed), 70)
+        self.assertEqual(streamlet.count_channels(out), 30)
+
+    def test_result_below_min_channels_removes_nothing(self):
+        text = playlist_with_ids(self.ids(25) + ['Nema.cz'] * 5)
+        ids = {('k%d.cz' % i) for i in range(19)}               # ostalo by 19 < MIN_CHANNELS
+        out, removed, note = streamlet.hide_no_epg(text, ids)
+        self.assertEqual((out, removed), (text, []))
+        self.assertIn('19', note)
+
+    def test_empty_playlist(self):
+        out, removed, note = streamlet.hide_no_epg('#EXTM3U\n', EPG_IDS)
+        self.assertEqual((out, removed, note), ('#EXTM3U\n', [], None))
+
+
+class RenderAndSignature(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.epg = os.path.join(self.tmp, 'epg.xml')
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def put_epg(self, ids):
+        with open(self.epg, 'wb') as f:
+            f.write(make_epg_ids(ids))
+
+    def test_without_options_same_as_before(self):
+        text = make_playlist(25)
+        self.assertEqual(streamlet.render(text, None, None), streamlet.filter_duplicates(text, None))
+        out, _ = streamlet.render(text, None, streamlet.Options())
+        self.assertEqual(out, text)
+
+    def test_groups_then_hide_numbers_only_remaining_channels(self):
+        ids = ['K%d.cz' % i for i in range(30)]
+        self.put_epg(ids[:25])
+        text = playlist_with_ids(ids, names=['Film %d' % i for i in range(30)])
+        opts = streamlet.Options(groups=True, chno_start=200, hide_no_epg=True, epg_path=self.epg)
+        out, removed = streamlet.render(text, None, opts)
+        self.assertEqual(removed, [])
+        self.assertEqual(len(opts.report['no_epg']), 5)
+        self.assertEqual(opts.report['note'], '')
+        self.assertEqual(streamlet.count_channels(out), 25)
+        self.assertEqual(sorted(int(attr(l, 'tvg-chno')[0]) for l in extinf_rows(out)),
+                         list(range(200, 225)))
+
+    def test_hide_skipped_when_epg_missing_but_groups_applied(self):
+        text = playlist_with_ids(['K%d.cz' % i for i in range(30)])
+        opts = streamlet.Options(groups=True, hide_no_epg=True, epg_path=os.path.join(self.tmp, 'nie.xml'))
+        out, _ = streamlet.render(text, None, opts)
+        self.assertEqual(streamlet.count_channels(out), 30)
+        self.assertEqual(opts.report['no_epg'], [])
+        self.assertIn('nedá prečítať', opts.report['note'])
+        self.assertTrue(all(attr(l, 'group-title') for l in extinf_rows(out)))
+
+    def test_signature_backward_compatible_when_everything_off(self):
+        keys = {'a', 'b'}
+        self.assertEqual(streamlet.filter_signature(keys), streamlet.keys_signature(keys))
+        self.assertEqual(streamlet.filter_signature(keys, streamlet.Options()), streamlet.keys_signature(keys))
+        self.assertEqual(streamlet.filter_signature(None, streamlet.Options()), '')
+
+    def test_signature_reflects_settings(self):
+        keys = {'a'}
+        base = streamlet.filter_signature(keys, streamlet.Options())
+        g101 = streamlet.filter_signature(keys, streamlet.Options(groups=True, chno_start=101))
+        g200 = streamlet.filter_signature(keys, streamlet.Options(groups=True, chno_start=200))
+        self.assertEqual(len({base, g101, g200}), 3)
+        hide_off = streamlet.filter_signature(keys, streamlet.Options(groups=True, hide_no_epg=False,
+                                                                      epg_path=self.epg))
+        self.assertEqual(hide_off, g101)        # EPG sa do podpisu nedostane, keď je skrytie vypnuté
+        hide_on = streamlet.filter_signature(keys, streamlet.Options(groups=True, hide_no_epg=True,
+                                                                     epg_path=self.epg))
+        self.assertNotEqual(hide_on, g101)
+
+    def test_signature_follows_epg_file_only_when_hiding(self):
+        keys = {'a'}
+
+        def sig():
+            return streamlet.filter_signature(keys, streamlet.Options(hide_no_epg=True, epg_path=self.epg))
+        none_sig = sig()
+        self.put_epg(['A.cz'] * 3)
+        with_epg = sig()
+        self.assertNotEqual(none_sig, with_epg)
+        self.assertEqual(with_epg, sig())                       # stabilný
+        os.utime(self.epg, (1, 1))
+        self.assertNotEqual(with_epg, sig())
+
+    def test_refresh_and_refilter_use_options(self):
+        local, raw = os.path.join(self.tmp, 'l.m3u'), os.path.join(self.tmp, 'raw.m3u')
+        opts = streamlet.Options(groups=True)
+        n, _c, written, _removed = streamlet.refresh(
+            'https://x/p.m3u', local, raw, None, opener=opener_for(make_playlist(25)), opts=opts)
+        self.assertTrue(written)
+        self.assertEqual(n, 25)
+        self.assertNotIn('group-title', read_file(raw))      # raw ostáva bez zmien
+        self.assertEqual(read_file(local).count('group-title="'), 25)
+        self.assertEqual(read_file(local).count('tvg-chno="'), 25)
+        # vypnutie skupín vráti pôvodný playlist
+        streamlet.refilter(raw, local, None, streamlet.Options())
+        self.assertEqual(read_file(local), read_file(raw))
+
+
+def read_file(path):
+    with open(path, encoding='utf-8') as f:
+        return f.read()
+
+
+
 # --- služba so stubmi Kodi -----------------------------------------------------
 
 class DownloadEpg(unittest.TestCase):
@@ -531,11 +861,12 @@ class Core(unittest.TestCase):
         self.calls = 0
         self.fail = False
 
-        def fake_refresh(url, path, raw_path=None, o2=None, timeout=30, opener=None):
+        def fake_refresh(url, path, raw_path=None, o2=None, timeout=30, opener=None, opts=None):
             self.calls += 1
             if self.fail:
                 raise OSError('bez siete')
-            return self.real_refresh(url, path, raw_path, o2, opener=opener_for(self.playlist))
+            return self.real_refresh(url, path, raw_path, o2, opener=opener_for(self.playlist),
+                                     opts=opts)
         self.playlist = make_playlist()
         streamlet.refresh = fake_refresh
 
@@ -790,6 +1121,114 @@ class Core(unittest.TestCase):
         text = '\n'.join(self.core.status_lines())
         self.assertIn('30 kanálov', text)
         self.assertIn('nastavená', text)
+
+    # --- skupiny, číslovanie, skrytie bez EPG v službe ---
+
+    def local_text(self):
+        return read_file(self.core.local_path())
+
+    def test_groups_on_by_default_and_numbered_from_101(self):
+        self.core.cycle()
+        rows = extinf_rows(self.local_text())
+        self.assertEqual(len(rows), 30)
+        self.assertEqual(sorted(int(attr(l, 'tvg-chno')[0]) for l in rows), list(range(101, 131)))
+        self.assertNotIn('group-title', read_file(self.core.raw_path()))
+
+    def test_groups_off_gives_plain_playlist(self):
+        KODI.settings['groups'] = 'false'
+        self.core.cycle()
+        self.assertEqual(self.local_text(), read_file(self.core.raw_path()))
+        self.assertNotIn('tvg-chno', self.local_text())
+
+    def test_changing_groups_settings_rewrites_without_download(self):
+        self.core.cycle()
+        self.assertEqual(self.calls, 1)
+        KODI.settings['chno_start'] = '300'
+        self.core.cycle()
+        self.assertEqual(self.calls, 1)
+        self.assertEqual(sorted(int(attr(l, 'tvg-chno')[0]) for l in extinf_rows(self.local_text())),
+                         list(range(300, 330)))
+        KODI.settings['groups'] = 'false'
+        self.core.cycle()
+        self.assertNotIn('group-title', self.local_text())
+        KODI.settings['groups'] = 'true'
+        self.core.cycle()
+        self.assertIn('group-title', self.local_text())
+        self.assertEqual(self.calls, 1)
+
+    def test_chno_start_is_clamped_and_garbage_falls_back(self):
+        for raw, expected in (('0', 1), ('-5', 1), ('99999', 9000), ('abc', 101), ('', 101), ('250', 250)):
+            KODI.settings['chno_start'] = raw
+            self.assertEqual(self.core.chno_start(), expected, raw)
+
+    def test_signature_stored_and_stable(self):
+        KODI.settings['groups'] = 'false'
+        self.core.cycle()
+        self.assertEqual(self.core.load_state()['filter_sig'], streamlet.keys_signature(None))
+        KODI.settings['groups'] = 'true'
+        self.core.cycle()
+        sig = self.core.load_state()['filter_sig']
+        before = os.stat(self.core.local_path()).st_mtime_ns
+        self.core.cycle()
+        self.assertEqual(self.core.load_state()['filter_sig'], sig)
+        self.assertEqual(os.stat(self.core.local_path()).st_mtime_ns, before)
+
+    def test_hide_no_epg_waits_for_epg_then_hides(self):
+        KODI.settings['hide_no_epg'] = 'true'
+        self.epg_data = make_epg_ids(['Kanal%d.cz' % i for i in range(20)])
+        self.core.cycle()               # playlist príde skôr než EPG
+        self.core.cycle()               # EPG je na disku: lokálny playlist sa prepočíta bez sťahovania
+        self.assertEqual(self.calls, 1)
+        names = self.local_names()
+        self.assertEqual(len(names), 20)
+        self.assertNotIn('Kanál 25', names)
+        state = self.core.load_state()
+        self.assertEqual(len(state['no_epg']), 10)
+        self.assertIn('Skryté (bez EPG)', '\n'.join(self.core.status_lines()))
+        self.assertEqual(sorted(int(attr(l, 'tvg-chno')[0]) for l in extinf_rows(self.local_text())),
+                         list(range(101, 121)))
+
+    def test_hide_no_epg_refreshes_after_epg_update(self):
+        KODI.settings['hide_no_epg'] = 'true'
+        self.epg_data = make_epg_ids(['Kanal%d.cz' % i for i in range(20)])
+        self.core.cycle()
+        self.core.cycle()
+        self.assertEqual(len(self.local_names()), 20)
+        # nové EPG má aj ďalšie kanály
+        self.epg_data = make_epg_ids(['Kanal%d.cz' % i for i in range(25)])
+        self.core.cycle(force=True)
+        self.core.cycle()
+        self.assertEqual(len(self.local_names()), 25)
+
+    def test_hide_no_epg_off_by_default(self):
+        self.epg_data = make_epg_ids(['Kanal%d.cz' % i for i in range(20)])
+        self.core.cycle()
+        self.core.cycle()
+        self.assertEqual(len(self.local_names()), 30)
+        self.assertNotIn('Skryté', '\n'.join(self.core.status_lines()))
+
+    def test_hide_no_epg_unusable_epg_keeps_everything_and_reports(self):
+        KODI.settings['hide_no_epg'] = 'true'
+        self.core.cycle()               # make_epg() má jediné ID
+        self.core.cycle()
+        self.assertEqual(len(self.local_names()), 30)
+        self.assertIn('iba 1 ID', self.core.load_state()['playlist_note'])
+        self.assertTrue(any('iba 1 ID' in m for m in KODI.logs))
+        self.assertIn('Upozornenie', '\n'.join(self.core.status_lines()))
+
+    def test_hide_no_epg_needs_local_epg(self):
+        KODI.settings['hide_no_epg'] = 'true'
+        KODI.settings['epg_local'] = 'false'
+        self.core.cycle()
+        self.core.cycle()
+        self.assertEqual(len(self.local_names()), 30)
+
+    def test_hide_never_leaves_playlist_below_minimum(self):
+        KODI.settings['hide_no_epg'] = 'true'
+        self.epg_data = make_epg_ids(['Kanal%d.cz' % i for i in range(12)])      # 18 z 30 by vypadlo
+        self.core.cycle()
+        self.core.cycle()
+        self.assertEqual(len(self.local_names()), 30)
 
 
 if __name__ == '__main__':

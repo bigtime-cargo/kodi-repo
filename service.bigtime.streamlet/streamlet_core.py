@@ -55,6 +55,22 @@ def dedupe_enabled():
     return _setting('dedupe_o2', 'true').lower() != 'false'
 
 
+def groups_enabled():
+    return _setting('groups', 'true').lower() != 'false'
+
+
+def hide_no_epg_enabled():
+    return _setting('hide_no_epg', 'false').lower() == 'true'
+
+
+def chno_start():
+    try:
+        n = int(_setting('chno_start', str(streamlet.DEFAULT_CHNO_START)))
+    except ValueError:
+        n = streamlet.DEFAULT_CHNO_START
+    return max(1, min(n, 9000))
+
+
 def epg_local_enabled():
     return _setting('epg_local', 'true').lower() != 'false'
 
@@ -233,9 +249,21 @@ def current_o2_keys():
     return streamlet.o2_keys(streamlet.read_text(o2_playlist_path()))
 
 
-def _remember_filter(state, keys, removed):
-    state['filter_sig'] = streamlet.keys_signature(keys)
+def playlist_options():
+    """Skupiny, číslovanie a skrytie bez EPG podľa nastavení. Skrytie potrebuje
+    lokálnu kópiu EPG (nastavenie epg_local); bez nej sa nepoužije."""
+    return streamlet.Options(
+        groups=groups_enabled(), chno_start=chno_start(),
+        hide_no_epg=hide_no_epg_enabled() and epg_local_enabled(), epg_path=epg_path())
+
+
+def _remember_filter(state, keys, opts, removed):
+    state['filter_sig'] = streamlet.filter_signature(keys, opts)
     state['removed'] = removed
+    state['no_epg'] = opts.report.get('no_epg', [])
+    state['playlist_note'] = opts.report.get('note', '')
+    if state['playlist_note']:
+        log(state['playlist_note'], xbmc.LOGWARNING)
 
 
 def refresh_playlist(state):
@@ -243,9 +271,10 @@ def refresh_playlist(state):
     now = time.time()
     state['last_try'] = now
     keys = current_o2_keys()
+    opts = playlist_options()
     try:
         n, changed, written, removed = streamlet.refresh(
-            playlist_url(), local_path(), raw_path(), keys)
+            playlist_url(), local_path(), raw_path(), keys, opts=opts)
     except Exception as exc:
         state['last_fail'] = '%s' % exc
         log('sťahovanie playlistu zlyhalo: %r' % exc, xbmc.LOGWARNING)
@@ -253,25 +282,28 @@ def refresh_playlist(state):
     state.pop('last_fail', None)
     state['last_ok'] = now
     state['channels'] = n
-    _remember_filter(state, keys, removed)
-    log('playlist: %d kanálov, opravených ID %d, vynechaných duplicít %d, %s'
-        % (n, changed, len(removed), 'zapísaný' if written else 'bez zmeny'))
+    _remember_filter(state, keys, opts, removed)
+    log('playlist: %d kanálov, opravených ID %d, vynechaných duplicít %d, bez EPG %d, %s'
+        % (n, changed, len(removed), len(opts.report['no_epg']),
+           'zapísaný' if written else 'bez zmeny'))
     return True
 
 
 def apply_filter(state):
-    """Zoznam O2 TV (alebo nastavenie) sa zmenil: lokálny playlist sa znova
-    vyrobí z uloženého bez sťahovania."""
+    """Zoznam O2 TV, nastavenie (skupiny, číslovanie, skrytie bez EPG) alebo lokálne
+    EPG sa zmenilo: lokálny playlist sa znova vyrobí z uloženého bez sťahovania."""
     keys = current_o2_keys()
-    if streamlet.keys_signature(keys) == state.get('filter_sig', ''):
+    opts = playlist_options()
+    if streamlet.filter_signature(keys, opts) == state.get('filter_sig', ''):
         return
-    res = streamlet.refilter(raw_path(), local_path(), keys)
+    res = streamlet.refilter(raw_path(), local_path(), keys, opts)
     if res is None:
         return          # uložený playlist ešte nie je, filter sa použije pri sťahovaní
     written, removed = res
-    _remember_filter(state, keys, removed)
-    log('filter duplicít s O2 TV: vynechaných %d, %s'
-        % (len(removed), 'playlist prepísaný' if written else 'bez zmeny'))
+    _remember_filter(state, keys, opts, removed)
+    log('lokálny playlist znova vyrobený: duplicity s O2 TV %d, bez EPG %d, %s'
+        % (len(removed), len(opts.report['no_epg']),
+           'playlist prepísaný' if written else 'bez zmeny'))
 
 
 def ensure_instance(state):
@@ -332,6 +364,11 @@ def status_lines():
             lines.append('Filter duplicít s O2 TV: žiadne duplicity')
         else:
             lines.append('Filter duplicít s O2 TV: čaká na export O2 TV')
+        if hide_no_epg_enabled():
+            no_epg = state.get('no_epg') or []
+            lines.append('Skryté (bez EPG): %s' % (', '.join(no_epg) if no_epg else 'žiadne'))
+        if state.get('playlist_note'):
+            lines.append('Upozornenie: %s' % state['playlist_note'])
     if not epg_local_enabled():
         lines.append('EPG: lokálna kópia vypnutá (číta ho IPTV Simple z URL)')
     elif streamlet.epg_valid(epg_path()):

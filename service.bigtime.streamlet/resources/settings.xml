@@ -29,6 +29,22 @@
           <default>true</default>
           <control type="toggle"/>
         </setting>
+        <setting id="groups" type="boolean" label="Zaradiť kanály do skupín podľa témy a očíslovať">
+          <level>0</level>
+          <default>true</default>
+          <control type="toggle"/>
+        </setting>
+        <setting id="chno_start" type="integer" label="Prvé číslo kanála (O2 TV má 1-99)">
+          <level>0</level>
+          <default>101</default>
+          <constraints><minimum>1</minimum><step>1</step><maximum>9000</maximum></constraints>
+          <control type="spinner" format="integer"/>
+        </setting>
+        <setting id="hide_no_epg" type="boolean" label="Skryť kanály, ktoré nemajú EPG (podľa lokálnej kópie EPG)">
+          <level>0</level>
+          <default>false</default>
+          <control type="toggle"/>
+        </setting>
         <setting id="refresh_hours" type="integer" label="Obnova playlistu po (hodín)">
           <level>0</level>
           <default>12</default>

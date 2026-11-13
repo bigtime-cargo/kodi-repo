@@ -18,6 +18,8 @@ import zlib
 import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape
 
+import kanaly_skupiny
+
 DEFAULT_PLAYLIST_URL = 'https://repo.streamlet.info/playlists/cz.m3u'
 DEFAULT_EPG_URL = 'https://www.open-epg.com/files/czech.xml'
 STREAMLET_HOST = 'repo.streamlet.info'
@@ -36,6 +38,9 @@ KEEP_RATIO = 0.5             # nový playlist s menej ako polovicou kanálov sa 
 MIN_EPG_BYTES = 200 * 1024   # menší súbor nie je celé EPG (napr. stránka s chybou)
 MAX_EPG_BYTES = 300 * 1024 * 1024    # po rozbalení
 EPG_CHUNK = 64 * 1024
+DEFAULT_CHNO_START = 101     # číslovanie streamletu; O2 TV má 1-99
+MIN_EPG_IDS = 10             # menej ID v lokálnom EPG = EPG je nepoužiteľné, nič sa neskrýva
+MAX_HIDE_RATIO = 0.7         # filter, ktorý by vyradil viac kanálov, sa nepoužije
 UA = 'Mozilla/5.0 (compatible; service.bigtime.streamlet)'
 
 NASTAVENY = 'NASTAVENY'      # inštancia číta náš lokálny súbor
@@ -266,10 +271,9 @@ def keys_signature(keys):
     return hashlib.sha1('\n'.join(sorted(keys)).encode('utf-8')).hexdigest()[:16]
 
 
-def filter_duplicates(text, keys):
-    """Vráti (playlist bez kanálov, ktoré už má O2 TV, zoznam vynechaných názvov)."""
-    if not keys:
-        return text, []
+def _drop_entries(text, drop):
+    """Vráti (text bez záznamov, pre ktoré `drop(riadok #EXTINF)` platí, zoznam ich
+    názvov). Záznam = riadok #EXTINF + riadky za ním až po adresu (vrátane)."""
     out, removed, entry = [], [], []
     for line in text.split('\n'):
         if not entry:
@@ -280,9 +284,8 @@ def filter_duplicates(text, keys):
             continue
         entry.append(line)
         if line.strip() and not line.startswith('#'):        # adresa ukončuje záznam
-            name = _entry_name(entry[0])
-            if name_keys(name) & keys:
-                removed.append(name)
+            if drop(entry[0]):
+                removed.append(_entry_name(entry[0]))
             else:
                 out.extend(entry)
             entry = []
@@ -290,11 +293,208 @@ def filter_duplicates(text, keys):
     return '\n'.join(out), removed
 
 
-def refresh(url, local_path, raw_path=None, o2=None, timeout=30, opener=urllib.request.urlopen):
+def filter_duplicates(text, keys):
+    """Vráti (playlist bez kanálov, ktoré už má O2 TV, zoznam vynechaných názvov)."""
+    if not keys:
+        return text, []
+    return _drop_entries(text, lambda extinf: bool(name_keys(_entry_name(extinf)) & keys))
+
+
+# --- skupiny a číslovanie kanálov -----------------------------------------------
+#
+# Každý #EXTINF dostane `group-title` (téma podľa názvu) a `tvg-chno` (číslo od
+# `chno_start` podľa témy a názvu). Číslo držíme v atribúte, poradie riadkov v súbore
+# ostáva. IPTV Simple berie číslo z `tvg-chno`, keď inštancia nemá zapnuté
+# `numberByOrder` (predvolene vypnuté).
+
+_ATTR_GROUP = re.compile(r'(?<=\s)group-title="[^"]*"')
+_ATTR_CHNO = re.compile(r'(?<=\s)tvg-chno="[^"]*"')
+_ATTR_TVG_ID = re.compile(r'(?:^|\s)tvg-id="([^"]*)"')
+
+
+def split_extinf(line):
+    """Rozdelí riadok #EXTINF na (hlavička s atribútmi, názov). Názov je text za
+    prvou čiarkou mimo úvodzoviek (čiarka v hodnote atribútu ho nerozdelí); keď
+    úvodzovky nesedia, za poslednou čiarkou. Bez čiarky je názov prázdny."""
+    in_quote = False
+    for i, ch in enumerate(line):
+        if ch == '"':
+            in_quote = not in_quote
+        elif ch == ',' and not in_quote:
+            return line[:i], line[i + 1:]
+    if ',' in line:
+        head, name = line.rsplit(',', 1)
+        return head, name
+    return line, ''
+
+
+def _put_attr(head, regex, name, value):
+    """Nahradí atribút `name` v hlavičke (ostatné jeho výskyty zmaže), inak ho pridá."""
+    attr = '%s="%s"' % (name, value.replace('"', "'"))
+    parts = regex.split(head)
+    if len(parts) == 1:
+        return head.rstrip() + ' ' + attr
+    return parts[0] + attr + ''.join(p for p in parts[1:])
+
+
+def with_attrs(extinf, group, chno):
+    """Riadok #EXTINF s `group-title` a `tvg-chno` (existujúce sa nahradia)."""
+    cr = '\r' if extinf.endswith('\r') else ''
+    line = extinf[:-1] if cr else extinf
+    head, name = split_extinf(line)
+    head = _put_attr(head, _ATTR_GROUP, 'group-title', group)
+    head = _put_attr(head, _ATTR_CHNO, 'tvg-chno', str(chno))
+    return head + (',' + name if ',' in line else '') + cr
+
+
+def add_groups(text, chno_start=DEFAULT_CHNO_START):
+    """Pridá ku každému #EXTINF `group-title` a `tvg-chno`. Čísla idú od `chno_start`
+    podľa kanaly_skupiny.order_key (téma, názov; pri zhode pôvodné poradie). Vráti
+    (text, počet kanálov). Riadky iné než #EXTINF sa nemenia."""
+    lines = text.split('\n')
+    idx = [i for i, l in enumerate(lines) if l.startswith('#EXTINF')]
+    names = {i: split_extinf(lines[i].rstrip('\r'))[1].strip() for i in idx}
+    ranked = sorted(idx, key=lambda i: (kanaly_skupiny.order_key(names[i]), i))
+    for n, i in enumerate(ranked):
+        lines[i] = with_attrs(lines[i], kanaly_skupiny.group_title(names[i]), chno_start + n)
+    return '\n'.join(lines), len(idx)
+
+
+# --- skrytie kanálov bez EPG ---------------------------------------------------
+
+_EPG_CHANNEL_TAG = re.compile(rb'<channel\b[^>]*>')
+_EPG_ID_ATTR = re.compile(rb'\sid\s*=\s*(?:"([^"]*)"|\'([^\']*)\')')
+
+
+def epg_channel_ids(path, chunk=EPG_CHUNK):
+    """Množina ID kanálov (`<channel id="...">`, bez ohľadu na veľkosť písmen) z lokálneho
+    XMLTV. Súbor sa číta po častiach s prekryvom, nikdy celý. None, keď sa nedá prečítať."""
+    ids = set()
+    carry = b''
+    try:
+        with open(path, 'rb') as f:
+            while True:
+                data = f.read(chunk)
+                if not data:
+                    break
+                buf = carry + data
+                end = 0
+                for m in _EPG_CHANNEL_TAG.finditer(buf):
+                    end = m.end()
+                    a = _EPG_ID_ATTR.search(m.group(0))
+                    if a:
+                        raw = a.group(1) if a.group(1) is not None else a.group(2)
+                        ids.add(html.unescape(raw.decode('utf-8', 'replace')).strip().casefold())
+                rest = buf[end:]
+                i = rest.rfind(b'<channel')
+                if i >= 0:
+                    carry = rest[i:] if len(rest) - i <= 8192 else b''
+                else:
+                    carry = rest[-8:]       # možný začiatok `<channel` na hranici
+    except OSError:
+        return None
+    return ids
+
+
+def epg_signature(path):
+    """Veľkosť a čas zmeny lokálneho EPG (na zistenie, že sa obnovilo)."""
+    try:
+        st = os.stat(path)
+        return '%d-%d' % (st.st_size, int(st.st_mtime))
+    except OSError:
+        return 'none'
+
+
+def _entry_tvg_id(extinf):
+    m = _ATTR_TVG_ID.search(split_extinf(extinf.rstrip('\r'))[0])
+    return m.group(1).split('@', 1)[0].strip().casefold() if m else ''
+
+
+def hide_no_epg(text, ids):
+    """Vynechá kanály, ktorých `tvg-id` nie je v `ids` (kanál bez tvg-id tiež).
+    Vráti (text, názvy vynechaných, dôvod prečo sa nič nevynechalo alebo None).
+    Poistky: bez použiteľného EPG (None / menej než MIN_EPG_IDS ID), pri vyradení
+    viac než MAX_HIDE_RATIO kanálov alebo ak by ostalo menej než MIN_CHANNELS kanálov
+    sa nevynechá nič."""
+    if ids is None:
+        return text, [], 'lokálne EPG sa nedá prečítať'
+    if len(ids) < MIN_EPG_IDS:
+        return text, [], 'v lokálnom EPG je iba %d ID kanálov' % len(ids)
+    total = count_channels(text)
+    if not total:
+        return text, [], None
+    out, removed = _drop_entries(text, lambda extinf: _entry_tvg_id(extinf) not in ids)
+    if len(removed) > total * MAX_HIDE_RATIO:
+        return text, [], 'EPG by vyradilo %d z %d kanálov' % (len(removed), total)
+    if total - len(removed) < MIN_CHANNELS:
+        return text, [], 'po vyradení by ostalo iba %d kanálov' % (total - len(removed))
+    return out, removed, None
+
+
+# --- výsledný lokálny playlist -------------------------------------------------
+
+class Options:
+    """Nastavenia výstupu (skupiny, číslovanie, skrytie bez EPG). `report` vyplní
+    render(): `no_epg` (vynechané názvy) a `note` (dôvod, prečo sa niečo preskočilo)."""
+
+    def __init__(self, groups=False, chno_start=DEFAULT_CHNO_START, hide_no_epg=False,
+                 epg_path=None):
+        self.groups = bool(groups)
+        self.chno_start = int(chno_start)
+        self.hide_no_epg = bool(hide_no_epg) and bool(epg_path)
+        self.epg_path = epg_path
+        self.report = {'no_epg': [], 'note': ''}
+
+    def signature(self):
+        """Odtlačok nastavení, ktoré menia výstup; prázdny, keď sú obe funkcie vypnuté."""
+        parts = []
+        if self.groups:
+            parts.append('g%d' % self.chno_start)
+        if self.hide_no_epg:
+            parts.append('h' + epg_signature(self.epg_path))
+        return ','.join(parts)
+
+
+def filter_signature(keys, opts=None):
+    """Odtlačok všetkého, čo mení lokálny playlist oproti uloženému (zoznam O2 TV,
+    skupiny, číslovanie, skrytie bez EPG a stav EPG). Bez opts a pri vypnutých
+    funkciách sa rovná keys_signature (staré state.json ostáva platné)."""
+    sig = keys_signature(keys)
+    extra = opts.signature() if opts else ''
+    return sig + '|' + extra if extra else sig
+
+
+def render(fixed, o2=None, opts=None):
+    """Z playlistu s opravenými ID vyrobí lokálny: filter duplicít s O2 TV, potom
+    voliteľne skrytie bez EPG a skupiny s číslovaním. Vráti (text, vynechané
+    duplicity); podrobnosti dopĺňa do `opts.report`."""
+    shown, removed = filter_duplicates(fixed, o2)
+    if opts is None:
+        return shown, removed
+    opts.report = {'no_epg': [], 'note': ''}
+    notes = []
+    if opts.hide_no_epg:
+        shown, no_epg, note = hide_no_epg(shown, epg_channel_ids(opts.epg_path))
+        opts.report['no_epg'] = no_epg
+        if note:
+            notes.append('skrytie bez EPG preskočené: ' + note)
+    if opts.groups:
+        decorated, _n = add_groups(shown, opts.chno_start)
+        if count_channels(decorated) == count_channels(shown):
+            shown = decorated
+        else:
+            notes.append('skupiny preskočené: zmenil sa počet kanálov')
+    opts.report['note'] = '; '.join(notes)
+    return shown, removed
+
+
+def refresh(url, local_path, raw_path=None, o2=None, timeout=30, opener=urllib.request.urlopen,
+            opts=None):
     """Stiahne, opraví a zapíše playlist. Vráti (kanály, zmenených ID, zmenil sa
     súbor, názvy vynechaných duplicít). Pri akejkoľvek chybe vyhodí výnimku a starý
     súbor ostane nedotknutý. `raw_path` dostane playlist bez filtra (na lokálne
-    prefiltrovanie, keď sa zmení zoznam O2 TV), `o2` sú kľúče z o2_keys()."""
+    prefiltrovanie, keď sa zmení zoznam O2 TV), `o2` sú kľúče z o2_keys(), `opts`
+    je Options (skupiny, číslovanie, skrytie bez EPG)."""
     text = download(url, timeout, opener)
     old = read_text(raw_path or local_path)
     old_count = count_channels(old) if old else 0
@@ -302,17 +502,17 @@ def refresh(url, local_path, raw_path=None, o2=None, timeout=30, opener=urllib.r
     fixed, changed = fix_playlist(text)
     if raw_path:
         write_atomic(raw_path, fixed)
-    shown, removed = filter_duplicates(fixed, o2)
+    shown, removed = render(fixed, o2, opts)
     return n, changed, write_atomic(local_path, shown), removed
 
 
-def refilter(raw_path, local_path, o2=None):
+def refilter(raw_path, local_path, o2=None, opts=None):
     """Znova vyrobí lokálny playlist z uloženého (bez siete). Vráti (zmenil sa
     súbor, názvy vynechaných duplicít) alebo None, keď uložený playlist chýba."""
     raw = read_text(raw_path)
     if not raw:
         return None
-    shown, removed = filter_duplicates(raw, o2)
+    shown, removed = render(raw, o2, opts)
     return write_atomic(local_path, shown), removed
 
 
