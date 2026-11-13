@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<settings version="1">
+  <section id="service.bigtime.nba">
+    <category id="general" label="NBA">
+      <group id="1">
+        <setting id="playlist_url" type="string" label="URL amerického playlistu (z neho sa vyberú NBA a športové kanály)">
+          <level>0</level>
+          <default>https://repo.streamlet.info/playlists/us.m3u</default>
+          <control type="edit" format="string"><heading>URL playlistu</heading></control>
+        </setting>
+        <setting id="epg_url" type="string" label="URL EPG (zdroj stiahnutia; v novej inštancii bez lokálnej kópie)">
+          <level>0</level>
+          <default>https://www.open-epg.com/files/unitedstates1.xml</default>
+          <control type="edit" format="string"><heading>URL EPG</heading></control>
+        </setting>
+        <setting id="epg_local" type="boolean" label="Sťahovať EPG sám a čítať ho z lokálneho súboru (open-epg.com má limit 20 stiahnutí denne)">
+          <level>0</level>
+          <default>true</default>
+          <control type="toggle"/>
+        </setting>
+        <setting id="epg_hours" type="integer" label="Obnova EPG po (hodín)">
+          <level>0</level>
+          <default>12</default>
+          <constraints><minimum>1</minimum><step>1</step><maximum>168</maximum></constraints>
+          <control type="spinner" format="integer"/>
+        </setting>
+        <setting id="check_streams" type="boolean" label="Overiť streamy a vynechať tie, ktoré nefungujú (kanál vypadne až po 2 zlyhaniach po sebe)">
+          <level>0</level>
+          <default>true</default>
+          <control type="toggle"/>
+        </setting>
+        <setting id="chno_start" type="integer" label="Prvé číslo kanála (O2 TV má 1-99, Streamlet CZ od 101)">
+          <level>0</level>
+          <default>201</default>
+          <constraints><minimum>1</minimum><step>1</step><maximum>9000</maximum></constraints>
+          <control type="spinner" format="integer"/>
+        </setting>
+        <setting id="refresh_hours" type="integer" label="Obnova playlistu a overenie streamov po (hodín)">
+          <level>0</level>
+          <default>6</default>
+          <constraints><minimum>1</minimum><step>1</step><maximum>168</maximum></constraints>
+          <control type="spinner" format="integer"/>
+        </setting>
+      </group>
+    </category>
+  </section>
+</settings>
