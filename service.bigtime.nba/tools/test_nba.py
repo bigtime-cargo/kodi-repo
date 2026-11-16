@@ -166,6 +166,15 @@ class Render(unittest.TestCase):
         nums = sorted(int(e.split('tvg-chno="')[1].split('"')[0]) for e in by_name.values())
         self.assertEqual(nums, list(range(201, 201 + len(items))))
 
+    def test_default_numbering_is_above_merged_list(self):
+        # Zlúčený zoznam (service.bigtime.setup) má čísla do ~1100 (kolízie od 1000) a Magio GO tam
+        # drží aj vlastné čísla v 200-999 (napr. 211); NBA je samostatná inštancia, tak musí začínať nad nimi.
+        self.assertGreaterEqual(nba.DEFAULT_CHNO_START, 2000)
+        text = nba.render(nba.candidates(make_us()))
+        nums = [int(e.split('tvg-chno="')[1].split('"')[0]) for e, _o, _u in nba.parse(text)]
+        self.assertEqual(min(nums), nba.DEFAULT_CHNO_START)
+        self.assertGreater(min(nums), 1100)
+
     def test_idempotent_and_renumber(self):
         text = nba.render(nba.candidates(make_us()), 201)
         again = nba.render(nba.parse(text), 201)

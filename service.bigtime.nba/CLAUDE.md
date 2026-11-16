@@ -1,6 +1,6 @@
 # service.bigtime.nba
 
-Služba: každých `refresh_hours` (6) stiahne `https://repo.streamlet.info/playlists/us.m3u` (~3000 kanálov, projekt iptv-org), vyberie NBA a športové kanály, **každý stream overí** a zapíše `addon_data/service.bigtime.nba/nba-us.m3u`. Všetky kanály majú `group-title="NBA"` a `tvg-chno` od 201 (O2 TV 1-99, Streamlet CZ od 101). Inštancia IPTV Simple „NBA (Bigtime)“ číta ten lokálny súbor a lokálnu kópiu EPG `nba-epg.xml` (zdroj `https://www.open-epg.com/files/unitedstates1.xml`).
+Služba: každých `refresh_hours` (6) stiahne `https://repo.streamlet.info/playlists/us.m3u` (~3000 kanálov, projekt iptv-org), vyberie NBA a športové kanály, **každý stream overí** a zapíše `addon_data/service.bigtime.nba/nba-us.m3u`. Všetky kanály majú `group-title="NBA"` a `tvg-chno` od 2001 (1.0.2; predtým 201, no Magio GO má vo zlúčenom zozname vlastné čísla aj v 200-999, napr. „Eroxxx HD“ 211, takže sa s NBA zrážalo: NBA je samostatná inštancia a `merge.py` ju nevidí; zlúčený zoznam má čísla 1-1016, kolízie v ňom od 1000). Kodi navyše na telke ukazuje kanály postupne 1..N, nie podľa `tvg-chno`, lebo `pvrmanager.usebackendchannelnumbers` je vypnuté (overené 16. 11. 2026 v `TV46.db`; NBA bolo 138-153, teda za zlúčeným zoznamom). Inštancia IPTV Simple „NBA (Bigtime)“ číta ten lokálny súbor a lokálnu kópiu EPG `nba-epg.xml` (zdroj `https://www.open-epg.com/files/unitedstates1.xml`).
 
 ## Súbory
 - `nba.py` – bez Kodi: výber kanálov, oprava `tvg-id`, overenie streamov, skupina + číslovanie, EPG, inštancie IPTV Simple.

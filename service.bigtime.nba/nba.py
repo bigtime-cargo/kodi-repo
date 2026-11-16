@@ -28,7 +28,8 @@ LOCAL_NAME = 'nba-us.m3u'
 RAW_NAME = 'nba-raw.m3u'        # vybrané a opravené kanály, ešte neoverené
 EPG_NAME = 'nba-epg.xml'        # lokálna kópia EPG (open-epg.com má limit 20 stiahnutí denne)
 GROUP = 'NBA'                   # skupina (hlavička) všetkých kanálov v playliste
-DEFAULT_CHNO_START = 201        # O2 TV má 1-99, Streamlet CZ od 101
+DEFAULT_CHNO_START = 2001       # nad zlúčeným zoznamom (O2 1-99, Streamlet od 101, Magio GO vlastné čísla,
+                                # kolízie od 1000): NBA je samostatná inštancia, kolízie s ňou nikto nerieši
 
 # Čo je "NBA / americký šport". Vyberá sa podľa názvu kanála.
 INCLUDE = re.compile(r'\bnba\b|\bespn|fox sports|\bfs[12]\b|\btnt\b|nbc sports|cbs sports', re.I)
