@@ -31,6 +31,7 @@ class KodiStub:
         self.logs = []
         self.enabled = {'plugin.video.youtube', 'service.sc.helper', 'pvr.iptvsimple'}
         self.installed = set(self.enabled)
+        self.settings = {}
 
 
 KODI = KodiStub()
@@ -76,6 +77,16 @@ def _install_stubs():
             return self.left < 0
     xbmc.Monitor = Monitor
 
+    xbmcaddon = types.ModuleType('xbmcaddon')
+
+    class Addon:
+        def __init__(self, _id=None):
+            pass
+
+        def getSetting(self, key):
+            return KODI.settings.get(key, '')
+    xbmcaddon.Addon = Addon
+
     xbmcgui = types.ModuleType('xbmcgui')
     xbmcgui.NOTIFICATION_INFO, xbmcgui.NOTIFICATION_WARNING = 'i', 'w'
 
@@ -86,7 +97,7 @@ def _install_stubs():
 
     xbmcvfs = types.ModuleType('xbmcvfs')
     xbmcvfs.translatePath = lambda p: p
-    for n, m in (('xbmc', xbmc), ('xbmcgui', xbmcgui), ('xbmcvfs', xbmcvfs)):
+    for n, m in (('xbmc', xbmc), ('xbmcaddon', xbmcaddon), ('xbmcgui', xbmcgui), ('xbmcvfs', xbmcvfs)):
         sys.modules[n] = m
 
 
@@ -384,6 +395,51 @@ class Iptv(unittest.TestCase):
         self.assertTrue(iptv.file_has_marker(self.playlist))
 
 
+class IptvMigracia(Iptv):
+    """Plán a prepis starých samostatných inštancií (bez Kodi)."""
+
+    def test_plan_vyberie_o2_potom_magio_potom_streamlet(self):
+        write(self.playlist, self.O2)
+        magio = os.path.join(self.tmp, 'm', 'playlist.m3u')
+        write(magio, b'#EXTM3U\n#EXTINF:-1,A\nplugin://plugin.video.magiogo/?x=1\n')
+        st = os.path.join(self.tmp, 'addon_data', 'service.bigtime.streamlet', 'streamlet-cz.m3u')
+        write(st, b'#EXTM3U\n#EXTINF:-1,B\nhttp://x/b.m3u8\n')
+        tr = lambda p: p.replace('special://userdata', self.tmp)  # noqa: E731
+        self.instance(1, st)
+        self.instance(2, magio)
+        self.instance(3, self.playlist)
+        plan = iptv.plan_migration(self.sdir, tr)
+        self.assertEqual(plan['primary'][0], 3)            # O2 TV má prednosť pred nižším číslom
+        self.assertEqual(sorted(n for n, _p, _r in plan['others']), [1, 2])
+        self.assertEqual(plan['roles'], ['o2tv', 'magiogo', 'streamlet'])
+
+    def test_plan_bez_nasich_instancii_je_none(self):
+        foreign = os.path.join(self.tmp, 'cudzi.m3u')
+        write(foreign, b'#EXTM3U\nhttp://example.invalid/s\n')
+        self.instance(1, foreign)
+        self.assertIsNone(iptv.plan_migration(self.sdir))
+        self.assertIsNone(iptv.plan_migration(os.path.join(self.tmp, 'nic')))
+
+    def test_plan_ignoruje_uz_spojenu_instanciu(self):
+        merged = os.path.join(self.tmp, 'bigtime.m3u')
+        write(merged, b'#EXTM3U\n#BIGTIME-MERGED\n')
+        self.instance(1, merged)
+        self.assertEqual(iptv.instance_roles(self.sdir), [])
+
+    def test_render_instance_zachova_ostatne_a_zahodi_default(self):
+        path = os.path.join(self.sdir, 'instance-settings-1.xml')
+        write(path, b'<settings version="2">\n<setting id="m3uPath" default="true">a</setting>\n'
+                    b'<setting id="vlastne">x</setting>\n<setting id="prazdne" default="true" />\n</settings>\n')
+        text = iptv.render_instance(path, (('m3uPath', 'b&c'), ('nove', '1')))
+        root = iptv.ET.fromstring(text)
+        vals = {e.get('id'): (e.text, e.get('default')) for e in root.iter('setting')}
+        self.assertEqual(vals['m3uPath'], ('b&c', None))
+        self.assertEqual(vals['vlastne'], ('x', None))
+        self.assertEqual(vals['nove'], ('1', None))
+        self.assertEqual(vals['prazdne'][1], 'true')
+        self.assertEqual(read(path).count(b'<setting '), 3)     # čítanie nič nezapísalo
+
+
 class IptvMagio(Iptv):
     """Magio GO: vlastná značka, vlastný playlist, obnova každých 15 min."""
     MAGIO = (b'#EXTM3U\n#EXTINF:-1 tvg-id="4621",AMC\n'
@@ -638,6 +694,7 @@ class Sluzba(unittest.TestCase):
         self.assertEqual(KODI.rpc, [])
 
     def test_stare_samostatne_instancie_sa_nemenia_a_nic_sa_nespaja(self):
+        KODI.settings['auto_migrate'] = 'false'
         self.zdroje()
         other = os.path.join(self.tmp, 'Movies', 'playlist.m3u')
         write(other, self.O2)                                    # starý export O2 TV
@@ -653,6 +710,7 @@ class Sluzba(unittest.TestCase):
         self.assertIn('samostatné inštancie', core.status_lines()[-1])
 
     def test_samostatna_instancia_streamletu_staci_na_samostatny_rezim(self):
+        KODI.settings['auto_migrate'] = 'false'
         self.zdroje()
         write(os.path.join(self.sdir, 'instance-settings-1.xml'),
               iptv.build_settings_xml(self.st_playlist, 'e').encode())
@@ -679,6 +737,7 @@ class Sluzba(unittest.TestCase):
         self.assertEqual(len(self.instancie()), 1)
 
     def test_po_zmazani_starych_instancii_vznikne_spojena(self):
+        KODI.settings['auto_migrate'] = 'false'
         self.zdroje()
         write(os.path.join(self.sdir, 'instance-settings-1.xml'),
               iptv.build_settings_xml(self.playlist, 'e').encode())
@@ -686,6 +745,215 @@ class Sluzba(unittest.TestCase):
         os.remove(os.path.join(self.sdir, 'instance-settings-1.xml'))
         self.assertEqual(core.iptv_cycle(), iptv.SPOJENE)
         self.assertEqual(self.instancie(), ['instance-settings-1.xml'])
+
+    # IPTV: automatická migrácia starých samostatných inštancií
+
+    def stare_instancie(self, o2=True, streamlet=True, magio=True, foreign=True):
+        """1: O2 (starý export mimo addon_data), 2: Streamlet, 3: Magio GO, 4: cudzia (NBA)."""
+        other = os.path.join(self.tmp, 'Movies', 'playlist.m3u')
+        write(other, self.O2)
+        spec = []
+        if o2:
+            spec.append((1, other, 'O2 TV (Bigtime)'))
+        if streamlet:
+            spec.append((2, self.st_playlist, 'Streamlet CZ (Bigtime)'))
+        if magio:
+            spec.append((3, self.magio_playlist, 'Magio GO (Bigtime)'))
+        for n, m3u, name in spec:
+            xml = iptv.build_settings_xml(m3u, 'e', name).replace(
+                '</settings>', '    <setting id="mojeNastavenie">hodnota</setting>\n</settings>')
+            write(os.path.join(self.sdir, 'instance-settings-%d.xml' % n), xml.encode())
+        if foreign:
+            nba = os.path.join(self.tmp, 'nba.m3u')
+            write(nba, b'#EXTM3U\nhttp://example.invalid/nba\n')
+            write(os.path.join(self.sdir, 'instance-settings-4.xml'),
+                  iptv.build_settings_xml(nba, 'e', 'NBA (Bigtime)').encode())
+
+    def hodnoty(self, n):
+        root = iptv.ET.parse(os.path.join(self.sdir, 'instance-settings-%d.xml' % n)).getroot()
+        return {e.get('id'): e.text for e in root.iter('setting')}
+
+    def subory_instancii(self):
+        return {n: read(os.path.join(self.sdir, n)) for n in self.instancie()}
+
+    @property
+    def prazdny(self):
+        return os.path.join(self.ud, 'addon_data', 'service.bigtime.setup', 'prazdny.m3u')
+
+    def test_migracia_prepise_instancie_zalohuje_a_cudzie_nechá(self):
+        self.zdroje()
+        self.stare_instancie()
+        before = self.subory_instancii()
+        self.assertEqual(core.iptv_cycle(), iptv.SPOJENE)
+        # O2 → spoločná inštancia, vlastné nastavenia ostanú
+        v1 = self.hodnoty(1)
+        self.assertEqual(v1['kodi_addon_instance_name'], 'Bigtime TV')
+        self.assertEqual(v1['m3uPath'], self.merged)
+        self.assertEqual(v1['epgPath'], self.merged_epg)
+        self.assertEqual(v1['m3uRefreshIntervalMins'], '15')
+        self.assertEqual(v1['mojeNastavenie'], 'hodnota')
+        # ostatné naše → prázdny playlist, názov ostáva
+        for n, name in ((2, 'Streamlet CZ (Bigtime)'), (3, 'Magio GO (Bigtime)')):
+            v = self.hodnoty(n)
+            self.assertEqual(v['m3uPath'], self.prazdny)
+            self.assertEqual(v['kodi_addon_instance_name'], name)
+        self.assertEqual(read(self.prazdny), b'#EXTM3U\n')
+        # cudzia inštancia nedotknutá, nič nepribudlo
+        self.assertEqual(self.subory_instancii()['instance-settings-4.xml'], before['instance-settings-4.xml'])
+        self.assertEqual(len(self.instancie()), 4)
+        # záloha pôvodných súborov
+        backups = [d for d in os.listdir(self.data) if d.startswith('zaloha-')]
+        self.assertEqual(len(backups), 1)
+        saved = {n: read(os.path.join(self.data, backups[0], n)) for n in os.listdir(os.path.join(self.data, backups[0]))}
+        self.assertEqual(saved, {n: before[n] for n in ('instance-settings-1.xml', 'instance-settings-2.xml',
+                                                         'instance-settings-3.xml')})
+        # stav, toast, žiadne JSON-RPC
+        self.assertEqual(KODI.rpc, [])
+        self.assertEqual(KODI.notifications,
+                         ['Staré samostatné zoznamy kanálov sú prepísané na jeden spoločný — reštartuj Kodi.'])
+        state = core.load_state()
+        self.assertEqual(state['migration']['phase'], 'prepared')
+        self.assertEqual(state['migration']['emptied'], [2, 3])
+        self.assertEqual(state['reload_needed'], ['pvr.iptvsimple'])
+        self.assertEqual(iptv.mode(self.sdir, core.translate), iptv.SPOJENE)
+        # druhé kolo nič nerobí
+        after = self.subory_instancii()
+        self.assertEqual(core.iptv_cycle(), iptv.SPOJENE)
+        self.assertEqual(self.subory_instancii(), after)
+        self.assertEqual(len(KODI.notifications), 1)
+
+    def test_migracia_po_restarte_tise_zmaze_vyprazdnene(self):
+        self.zdroje()
+        self.stare_instancie()
+        core.iptv_cycle()
+        core.iptv_cycle()
+        self.assertEqual(len(self.instancie()), 4)              # pred reštartom sa nemaže
+        core.reset_pending()                                    # štart služby = Kodi sa reštartovalo
+        self.assertEqual(core.load_state()['migration']['phase'], 'restarted')
+        self.assertEqual(core.iptv_cycle(), iptv.SPOJENE)
+        self.assertEqual(self.instancie(), ['instance-settings-1.xml', 'instance-settings-4.xml'])
+        self.assertEqual(core.load_state()['migration']['phase'], 'done')
+        self.assertEqual(core.load_state()['migration']['removed'], [2, 3])
+        self.assertEqual(len(KODI.notifications), 2)            # + oznam o ďalšom reštarte
+        self.assertIn('po ďalšom reštarte', KODI.notifications[1])
+        self.assertEqual(core.load_state()['reload_needed'], ['pvr.iptvsimple'])
+        self.assertEqual(KODI.rpc, [])
+
+    def test_migracia_nezmaze_vyprazdnenu_ked_ju_uzivatel_zmenil(self):
+        self.zdroje()
+        self.stare_instancie()
+        core.iptv_cycle()
+        mine = os.path.join(self.tmp, 'moj.m3u')
+        write(mine, b'#EXTM3U\nhttp://example.invalid/m\n')
+        p2 = os.path.join(self.sdir, 'instance-settings-2.xml')
+        write(p2, iptv.build_settings_xml(mine, 'e', 'Moja').encode())
+        core.reset_pending()
+        core.iptv_cycle()
+        self.assertEqual(self.instancie(), ['instance-settings-1.xml', 'instance-settings-2.xml',
+                                            'instance-settings-4.xml'])
+
+    def test_migracia_caka_na_export_vsetkych_zdrojov(self):
+        self.zdroje()
+        os.remove(self.magio_playlist)                          # Magio GO ešte neexportoval
+        self.stare_instancie()
+        before = self.subory_instancii()
+        self.assertEqual(core.iptv_cycle(), iptv.SAMOSTATNE)
+        self.assertEqual(self.subory_instancii(), before)
+        self.assertEqual(KODI.notifications, [])
+        self.assertNotIn('migration', core.load_state())
+        write(self.magio_playlist, self.MAGIO)                  # po exporte sa migruje
+        self.assertEqual(core.iptv_cycle(), iptv.SPOJENE)
+        self.assertEqual(self.hodnoty(1)['m3uPath'], self.merged)
+
+    def test_migracia_nepotrebuje_zdroj_bez_instancie(self):
+        self.zdroje()
+        os.remove(self.magio_playlist)                          # Magio GO nemá inštanciu, nevadí
+        self.stare_instancie(magio=False)
+        self.assertEqual(core.iptv_cycle(), iptv.SPOJENE)
+
+    def test_migracia_vypnuta_nastavenim(self):
+        self.zdroje()
+        self.stare_instancie()
+        KODI.settings['auto_migrate'] = 'false'
+        before = self.subory_instancii()
+        self.assertEqual(core.iptv_cycle(), iptv.SAMOSTATNE)
+        self.assertEqual(self.subory_instancii(), before)
+        self.assertFalse(os.path.exists(self.merged))
+        self.assertEqual(KODI.notifications, [])
+
+    def test_migracia_bez_iptv_simple_nic_nerobi(self):
+        self.zdroje()
+        self.stare_instancie()
+        KODI.enabled.discard('pvr.iptvsimple')
+        before = self.subory_instancii()
+        self.assertEqual(core.iptv_cycle(), iptv.SAMOSTATNE)
+        self.assertEqual(self.subory_instancii(), before)
+
+    def test_migracia_bez_o2_prepise_magio(self):
+        self.zdroje()
+        self.stare_instancie(o2=False)
+        core.iptv_cycle()
+        self.assertEqual(self.hodnoty(3)['m3uPath'], self.merged)           # Magio GO je spoločná
+        self.assertEqual(self.hodnoty(3)['kodi_addon_instance_name'], 'Bigtime TV')
+        self.assertEqual(self.hodnoty(2)['m3uPath'], self.prazdny)          # Streamlet vyprázdnený
+        self.assertEqual(core.load_state()['migration']['emptied'], [2])
+
+    def test_migracia_jedinej_instancie(self):
+        self.zdroje()
+        self.stare_instancie(streamlet=False, magio=False, foreign=False)
+        core.iptv_cycle()
+        self.assertEqual(self.hodnoty(1)['m3uPath'], self.merged)
+        self.assertEqual(core.load_state()['migration']['emptied'], [])
+        core.reset_pending()
+        core.iptv_cycle()
+        self.assertEqual(self.instancie(), ['instance-settings-1.xml'])
+        self.assertEqual(core.load_state()['migration']['phase'], 'done')
+        self.assertEqual(len(KODI.notifications), 1)            # nič sa nemazalo, tak ani 2. oznam
+
+    def test_migracia_sa_nezopakuje(self):
+        self.zdroje()
+        self.stare_instancie()
+        core.iptv_cycle()
+        core.reset_pending()
+        core.iptv_cycle()                                       # dokončená
+        write(os.path.join(self.sdir, 'instance-settings-2.xml'),
+              iptv.build_settings_xml(self.st_playlist, 'e', 'Znova').encode())
+        before = self.subory_instancii()
+        self.assertEqual(iptv.mode(self.sdir, core.translate), iptv.SPOJENE)   # primárna číta spoločný
+        os.remove(os.path.join(self.sdir, 'instance-settings-1.xml'))          # a keď zmizne...
+        self.assertEqual(core.iptv_cycle(), iptv.SAMOSTATNE)
+        self.assertEqual(len(KODI.notifications), 2)
+        self.assertEqual({k: v for k, v in self.subory_instancii().items()},
+                         {k: v for k, v in before.items() if k != 'instance-settings-1.xml'})
+
+    def test_migracia_pri_chybe_vrati_povodne_subory(self):
+        self.zdroje()
+        self.stare_instancie()
+        before = self.subory_instancii()
+        real = iptv.write_atomic
+        calls = []
+
+        def boom(path, text):
+            calls.append(path)
+            if len(calls) == 3:                                  # prázdny playlist, 1. inštancia, potom pád
+                raise OSError('disk plný')
+            return real(path, text)
+        iptv.write_atomic = boom
+        try:
+            self.assertEqual(core.iptv_cycle(), iptv.SAMOSTATNE)
+        finally:
+            iptv.write_atomic = real
+        self.assertEqual(self.subory_instancii(), before)
+        self.assertEqual(core.load_state()['migration']['phase'], 'failed')
+        self.assertEqual(KODI.notifications, [])
+        self.assertEqual(core.iptv_cycle(), iptv.SAMOSTATNE)    # po chybe sa neskúša znova
+        self.assertEqual(self.subory_instancii(), before)
+
+    def test_dialog_ukazuje_stav_samostatnych_instancii(self):
+        KODI.settings['auto_migrate'] = 'false'
+        self.zdroje()
+        self.stare_instancie()
+        self.assertIn('prepíše na jeden spoločný zoznam', core.status_lines()[-1])
 
     def test_cycle_zavola_iptv_a_prezije_vynimku(self):
         self.zdroje()

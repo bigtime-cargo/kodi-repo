@@ -4,9 +4,12 @@
 # nezhodila ostatné ani službu. Doplnok nerobí žiadne sieťové požiadavky.
 import json
 import os
+import shutil
 import tempfile
+import time
 
 import xbmc
+import xbmcaddon
 import xbmcgui
 import xbmcvfs
 
@@ -36,8 +39,8 @@ LABELS = {
 CAKA = 'CAKA'               # žiadny zdroj (O2 TV, Magio GO, Streamlet) ešte nič neexportoval
 IPTV_LABELS = {
     iptv.SPOJENE: 'spoločný zoznam kanálov (O2 TV, Magio GO, Streamlet)',
-    iptv.SAMOSTATNE: 'samostatné inštancie (skupiny sa opakujú) — zmaž ich v IPTV Simple '
-                     'a služba vytvorí jednu spoločnú',
+    iptv.SAMOSTATNE: 'samostatné inštancie (skupiny sa opakujú) — služba ich prepíše na jeden '
+                     'spoločný zoznam, keď budú exportované všetky zdroje (alebo ich zmaž v IPTV Simple)',
     iptv.TREBA: 'treba nastaviť',
     CAKA: 'čaká na export z doplnkov (O2 TV, Magio GO, Streamlet — treba sa prihlásiť)',
     NEDOSTUPNY: 'IPTV Simple nie je nainštalovaný alebo je vypnutý',
@@ -102,12 +105,20 @@ def save_state(state):
         log('stav sa nepodarilo uložiť: %r' % exc, xbmc.LOGWARNING)
 
 
+MIGRATION = 'migration'      # stav migrácie v state.json: {'phase': ..., ...}
+PREPARED, RESTARTED, DONE, FAILED = 'prepared', 'restarted', 'done', 'failed'
+
+
 def reset_pending():
     """Po štarte Kodi sa `reload_needed` zahodí: Kodi už načítal nové súbory.
     Stav `warned` (INE) ostáva."""
     state = load_state()
     had = [state.pop(k, None) for k in ('reload_needed', 'restart_pending', 'iptv_refresh_pending')]
-    if any(v for v in had):
+    mig = state.get(MIGRATION)
+    restarted = isinstance(mig, dict) and mig.get('phase') == PREPARED
+    if restarted:
+        mig['phase'] = RESTARTED        # Kodi sa po príprave reštartovalo a načítalo prepísané inštancie
+    if any(v for v in had) or restarted:
         save_state(state)
 
 
@@ -242,20 +253,149 @@ def _have_sources():
     return any(os.path.isfile(src.playlist) for src in merge_sources())
 
 
+def auto_migrate_enabled():
+    """Nastavenie `auto_migrate` (predvolene zapnuté): prepísať staré samostatné inštancie."""
+    try:
+        value = xbmcaddon.Addon(ADDON_ID).getSetting('auto_migrate').strip().lower()
+    except Exception:
+        return True
+    return value != 'false'
+
+
+def _source_ready(src):
+    try:
+        with open(src.playlist, 'rb') as f:
+            return bool(merge.parse_playlist(f.read().decode('utf-8', 'replace')))
+    except OSError:
+        return False
+
+
+def _save_migration(**fields):
+    state = load_state()
+    mig = state.get(MIGRATION) if isinstance(state.get(MIGRATION), dict) else {}
+    mig.update(fields)
+    state[MIGRATION] = mig
+    save_state(state)
+    return state
+
+
+def migrate_cycle():
+    """Jednorazové prepísanie starých samostatných inštancií (O2 TV, Magio GO, Streamlet) na
+    spoločný zoznam, bez mazania PVR databázy. Najprv sa zálohujú ich súbory; potom sa
+    inštancia O2 TV (inak Magio GO, inak Streamlet) prepíše na „Bigtime TV“ so spoločným
+    playlistom a ostatné naše dostanú prázdny playlist (Kodi po reštarte samo zmaže ich
+    kanály). Cudzie inštancie (NBA...) sa nedotknú. Nerobí sa, kým nemajú export VŠETKY
+    zúčastnené zdroje (inak by kanály zmizli), ani znova (stav `migration`). Pri chybe sa
+    súbory vrátia zo zálohy. Vráti True, keď sa migrácia práve pripravila."""
+    state = load_state()
+    mig = state.get(MIGRATION)
+    if isinstance(mig, dict) and mig.get('phase'):
+        return False
+    if not auto_migrate_enabled() or not iptv_available():
+        return False
+    plan = iptv.plan_migration(iptv_dir(), translate)
+    if not plan:
+        return False
+    sources = {s.id: s for s in merge_sources()}
+    missing = [r for r in plan['roles'] if r not in sources or not _source_ready(sources[r])]
+    if missing:
+        log('migrácia čaká na export zdrojov: %s' % ', '.join(missing))
+        return False
+    merge_cycle()
+    merged, merged_epg = translate(iptv.MERGED_PLAYLIST), translate(iptv.MERGED_EPG)
+    try:
+        with open(merged, 'rb') as f:
+            ok = iptv.MERGED_MARKER in f.read() and os.path.isfile(merged_epg)
+    except OSError:
+        ok = False
+    if not ok:
+        log('migrácia čaká na spoločný zoznam kanálov')
+        return False
+
+    primary = plan['primary']
+    touched = [primary] + plan['others']
+    backup = os.path.join(data_dir(), 'zaloha-' + time.strftime('%Y%m%d-%H%M%S'))
+    done = []
+    try:
+        os.makedirs(backup, exist_ok=True)
+        for _num, path, _role in touched:
+            shutil.copy2(path, os.path.join(backup, os.path.basename(path)))
+        empty = translate(iptv.EMPTY_PLAYLIST)
+        # všetko sa najprv pripraví v pamäti, až potom sa súbory vymenia
+        new = {primary[1]: iptv.render_instance(primary[1], iptv.merged_values(merged, merged_epg))}
+        for _num, path, _role in plan['others']:
+            new[path] = iptv.render_instance(path, iptv.emptied_values(empty, merged_epg))
+        iptv.write_atomic(empty, '#EXTM3U\n')
+        for path, text in new.items():
+            iptv.write_atomic(path, text)
+            done.append(path)
+    except Exception as exc:
+        log('migrácia zlyhala, vraciam pôvodné súbory: %r' % exc, xbmc.LOGERROR)
+        for path in done:
+            try:
+                shutil.copy2(os.path.join(backup, os.path.basename(path)), path)
+            except OSError as err:
+                log('návrat %s zlyhal: %r' % (path, err), xbmc.LOGERROR)
+        _save_migration(phase=FAILED, error=repr(exc), at=time.time())
+        return False
+
+    state = _save_migration(phase=PREPARED, at=time.time(), primary=primary[0], role=primary[2],
+                            emptied=[n for n, _p, _r in plan['others']],
+                            backup=os.path.basename(backup))
+    state['reload_needed'] = sorted(set(_reload_list(state)) | {PVR_IPTV})
+    save_state(state)
+    log('migrácia pripravená: inštancia %d (%s) → %s, vyprázdnené: %s, záloha %s' % (
+        primary[0], primary[2], iptv.MERGED_NAME, [n for n, _p, _r in plan['others']] or '-',
+        os.path.basename(backup)))
+    toast('Staré samostatné zoznamy kanálov sú prepísané na jeden spoločný — reštartuj Kodi.',
+          warning=True)
+    return True
+
+
+def finish_migration():
+    """Po reštarte Kodi po `migrate_cycle` zmaže vyprázdnené inštancie (ak ich nik nezmenil).
+    Tichý krok bez reštartu: prázdne inštancie už nemajú v Kodi kanály."""
+    state = load_state()
+    mig = state.get(MIGRATION)
+    if not (isinstance(mig, dict) and mig.get('phase') == RESTARTED):
+        return False
+    empty = os.path.normpath(translate(iptv.EMPTY_PLAYLIST))
+    removed = []
+    for num in mig.get('emptied') or []:
+        path = os.path.join(iptv_dir(), 'instance-settings-%d.xml' % num)
+        current = iptv.read_setting(path, 'm3uPath')
+        if current and os.path.normpath(current) == empty:
+            try:
+                os.remove(path)
+                removed.append(num)
+            except OSError as exc:
+                log('zmazanie inštancie %d zlyhalo: %r' % (num, exc), xbmc.LOGWARNING)
+    state = _save_migration(phase=DONE, finished=time.time(), removed=removed)
+    log('migrácia dokončená, zmazané vyprázdnené inštancie: %s' % (removed or '-'))
+    if removed:
+        # kým sú vyprázdnené inštancie v Kodi načítané, ostávajú po nich prázdne skupiny
+        state['reload_needed'] = sorted(set(_reload_list(state)) | {PVR_IPTV})
+        save_state(state)
+        toast('Migrácia kanálov je dokončená — po ďalšom reštarte Kodi zmiznú prázdne skupiny.')
+    return True
+
+
 def iptv_cycle():
     """Udržuje spoločný zoznam kanálov a jeho inštanciu IPTV Simple. Vráti
     iptv.SPOJENE / SAMOSTATNE / ZIADNA, resp. CAKA / NEDOSTUPNY.
 
-    - SAMOSTATNE (inštancie čítajú zdroje po jednom): nerobí sa nič, nič sa nespája.
+    - SAMOSTATNE (inštancie čítajú zdroje po jednom): jednorazovo sa prepíšu na spoločný zoznam
+      (`migrate_cycle`), ak je to zapnuté a všetky zdroje už exportovali; inak sa nerobí nič.
     - SPOJENE: súbory sa podľa potreby znova spoja.
     - ZIADNA: ak niektorý zdroj už exportoval, spoja sa súbory a vznikne inštancia."""
     mode = iptv_mode()
     if mode == iptv.SAMOSTATNE:
-        return mode
+        return iptv.SPOJENE if migrate_cycle() else mode
     if mode == iptv.ZIADNA and not _have_sources():
         return CAKA
     merge_cycle()
     if mode == iptv.SPOJENE:
+        finish_migration()
         return mode
     if not os.path.isfile(translate(iptv.MERGED_PLAYLIST)):
         return CAKA

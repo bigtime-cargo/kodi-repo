@@ -40,6 +40,10 @@ SOURCE_PLAYLISTS = (
     'special://userdata/addon_data/service.bigtime.streamlet/streamlet-cz.m3u',
 )
 SOURCE_MARKERS = (MARKER, MAGIO_MARKER)
+# Migrácia starých samostatných inštancií: prázdny playlist pre inštancie, ktoré sa vyradia
+EMPTY_PLAYLIST = 'special://userdata/addon_data/service.bigtime.setup/prazdny.m3u'
+ROLE_O2, ROLE_MAGIO, ROLE_STREAMLET = 'o2tv', 'magiogo', 'streamlet'
+ROLE_ORDER = (ROLE_O2, ROLE_MAGIO, ROLE_STREAMLET)      # ktorá inštancia sa stane spoločnou
 
 SPOJENE = 'SPOJENE'         # nejaká inštancia číta spoločný playlist
 SAMOSTATNE = 'SAMOSTATNE'   # inštancie čítajú zdroje samostatne (staré nastavenie)
@@ -153,9 +157,8 @@ def status(settings_dir, playlist, translate=_identity, marker=MARKER):
     return CAKA
 
 
-def build_settings_xml(m3u_path, epg_path, name=INSTANCE_NAME, extra=()):
-    """Minimálna inštancia; ostatné kľúče si Kodi doplní z defaultov."""
-    values = (
+def _values(m3u_path, epg_path, name=INSTANCE_NAME, extra=()):
+    return (
         ('kodi_addon_instance_name', name),
         ('m3uPathType', '0'),
         ('m3uPath', m3u_path),
@@ -165,7 +168,12 @@ def build_settings_xml(m3u_path, epg_path, name=INSTANCE_NAME, extra=()):
         ('catchupEnabled', 'true'),
         ('catchupDays', '7'),
     ) + tuple(extra)
-    rows = ''.join('    <setting id="%s">%s</setting>\n' % (k, escape(v)) for k, v in values)
+
+
+def build_settings_xml(m3u_path, epg_path, name=INSTANCE_NAME, extra=()):
+    """Minimálna inštancia; ostatné kľúče si Kodi doplní z defaultov."""
+    rows = ''.join('    <setting id="%s">%s</setting>\n' % (k, escape(v))
+                   for k, v in _values(m3u_path, epg_path, name, extra))
     return '<settings version="2">\n' + rows + '</settings>\n'
 
 
@@ -200,3 +208,89 @@ def create_instance(settings_dir, m3u_path, epg_path, name=INSTANCE_NAME, extra=
             pass
         raise
     return target
+
+
+# --- migrácia starých samostatných inštancií -----------------------------------
+# Skúška na PC (Kodi 21.3): súbory instance-settings-N.xml prepísané za behu Kodi ostanú a po
+# reštarte Kodi samo zmaže kanály inštancií, ktoré čítajú prázdny playlist, takže netreba
+# resetovať PVR databázu. Inštancia O2 TV (jej kanály majú v databáze rovnaké riadky) sa
+# prepíše na spoločný zoznam a obľúbené O2 kanály sa zachovajú.
+
+def instance_roles(settings_dir, translate=_identity):
+    """[(číslo, cesta, rola)] inštancií, ktoré čítajú niektorý náš zdroj (O2 TV, Magio GO,
+    Streamlet) samostatne. Inštancie so spoločným playlistom a cudzie sa neberú."""
+    by_path = {_real(p, translate): r for p, r in zip(SOURCE_PLAYLISTS, ROLE_ORDER)}
+    found = []
+    for num, path in list_instances(settings_dir):
+        m3u = read_setting(path, 'm3uPath')
+        if not m3u:
+            continue
+        real = _real(m3u, translate)
+        if real is None or file_has_marker(real, MERGED_MARKER):
+            continue
+        role = by_path.get(real)
+        if role is None:
+            if file_has_marker(real, MARKER):
+                role = ROLE_O2
+            elif file_has_marker(real, MAGIO_MARKER):
+                role = ROLE_MAGIO
+        if role:
+            found.append((num, path, role))
+    return found
+
+
+def plan_migration(settings_dir, translate=_identity):
+    """Plán prepísania, alebo None. `primary` (číslo, cesta, rola) sa stane spoločnou
+    inštanciou (O2 TV, potom Magio GO, potom Streamlet; pri rovnakej role nižšie číslo),
+    `others` sa vyprázdnia, `roles` sú zdroje, ktoré musia mať export."""
+    found = instance_roles(settings_dir, translate)
+    if not found:
+        return None
+    primary = min(found, key=lambda r: (ROLE_ORDER.index(r[2]), r[0]))
+    return {'primary': primary, 'others': [r for r in found if r[0] != primary[0]],
+            'roles': sorted({r[2] for r in found}, key=ROLE_ORDER.index)}
+
+
+def render_instance(path, values):
+    """Text inštancie `path` s upravenými nastaveniami `values` ((id, hodnota)...). Ostatné
+    nastavenia ostanú; pri zmenenom sa zahodí `default="true"`. Čítanie, nič nezapisuje."""
+    root = ET.parse(path).getroot()
+    present = {el.get('id'): el for el in root.iter('setting')}
+    for key, value in values:
+        el = present.get(key)
+        if el is None:
+            el = ET.SubElement(root, 'setting', {'id': key})
+            present[key] = el
+        el.text = value
+        el.attrib.pop('default', None)
+    return ET.tostring(root, encoding='unicode') + '\n'
+
+
+def write_atomic(path, text):
+    """Zapíše súbor atómovo (dočasný súbor v tom istom adresári + fsync + replace)."""
+    directory = os.path.dirname(path) or '.'
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix='.bigtime-', suffix='.tmp', dir=directory)
+    try:
+        with os.fdopen(fd, 'wb') as f:
+            f.write(text.encode('utf-8'))
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def merged_values(m3u_path, epg_path):
+    """Nastavenia spoločnej inštancie (rovnaké ako pri novo vytvorenej)."""
+    return _values(m3u_path, epg_path, MERGED_NAME, MAGIO_EXTRA)
+
+
+def emptied_values(empty_path, epg_path):
+    """Inštancia, ktorá nemá poskytovať žiadne kanály (názov ostáva, mení sa len zdroj)."""
+    return (('m3uPathType', '0'), ('m3uPath', empty_path), ('epgPathType', '0'), ('epgPath', epg_path))

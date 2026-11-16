@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<settings version="1">
+  <section id="service.bigtime.setup">
+    <category id="general" label="Bigtime nastavenie">
+      <group id="1">
+        <setting id="auto_migrate" type="boolean" label="Staré samostatné inštancie IPTV Simple (O2 TV, Magio GO, Streamlet) prepísať na jeden spoločný zoznam (jednorazovo, so zálohou)">
+          <level>0</level>
+          <default>true</default>
+          <control type="toggle"/>
+        </setting>
+      </group>
+    </category>
+  </section>
+</settings>
