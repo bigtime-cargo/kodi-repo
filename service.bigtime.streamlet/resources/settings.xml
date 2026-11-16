@@ -45,6 +45,11 @@
           <default>false</default>
           <control type="toggle"/>
         </setting>
+        <setting id="adaptive" type="boolean" label="Prehrávať HLS kanály cez inputstream.adaptive (prežije krátke zaseknutie servera)">
+          <level>0</level>
+          <default>true</default>
+          <control type="toggle"/>
+        </setting>
         <setting id="refresh_hours" type="integer" label="Obnova playlistu po (hodín)">
           <level>0</level>
           <default>12</default>

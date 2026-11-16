@@ -59,6 +59,17 @@ def groups_enabled():
     return _setting('groups', 'true').lower() != 'false'
 
 
+def adaptive_enabled():
+    """Prehrávať HLS kanály cez inputstream.adaptive (zaseknutie servera prežije).
+    Vyžaduje povolený doplnok inputstream.adaptive, inak sa nepoužije."""
+    if _setting('adaptive', 'true').lower() == 'false':
+        return False
+    try:
+        return bool(xbmc.getCondVisibility('System.AddonIsEnabled(inputstream.adaptive)'))
+    except Exception:
+        return False
+
+
 def hide_no_epg_enabled():
     return _setting('hide_no_epg', 'false').lower() == 'true'
 
@@ -250,11 +261,12 @@ def current_o2_keys():
 
 
 def playlist_options():
-    """Skupiny, číslovanie a skrytie bez EPG podľa nastavení. Skrytie potrebuje
+    """Skupiny, číslovanie, skrytie bez EPG a ISA podľa nastavení. Skrytie potrebuje
     lokálnu kópiu EPG (nastavenie epg_local); bez nej sa nepoužije."""
     return streamlet.Options(
         groups=groups_enabled(), chno_start=chno_start(),
-        hide_no_epg=hide_no_epg_enabled() and epg_local_enabled(), epg_path=epg_path())
+        hide_no_epg=hide_no_epg_enabled() and epg_local_enabled(), epg_path=epg_path(),
+        adaptive=adaptive_enabled())
 
 
 def _remember_filter(state, keys, opts, removed):

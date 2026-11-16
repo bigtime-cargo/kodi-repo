@@ -42,6 +42,7 @@ DEFAULT_CHNO_START = 101     # číslovanie streamletu; O2 TV má 1-99
 MIN_EPG_IDS = 10             # menej ID v lokálnom EPG = EPG je nepoužiteľné, nič sa neskrýva
 MAX_HIDE_RATIO = 0.7         # filter, ktorý by vyradil viac kanálov, sa nepoužije
 UA = 'Mozilla/5.0 (compatible; service.bigtime.streamlet)'
+ADAPTIVE_PROP = '#KODIPROP:inputstream=inputstream.adaptive'
 
 NASTAVENY = 'NASTAVENY'      # inštancia číta náš lokálny súbor
 RUCNA = 'RUCNA'              # ručná inštancia číta URL streamletu priamo
@@ -360,6 +361,48 @@ def add_groups(text, chno_start=DEFAULT_CHNO_START):
     return '\n'.join(lines), len(idx)
 
 
+# --- prehrávanie cez inputstream.adaptive ---------------------------------------
+
+def _is_hls_url(url):
+    """Adresa končí na .m3u8 (pred prípadným ?dotazom alebo #). `.m3u8s` a adresy
+    bez koncovky sa nepovažujú za HLS, ISA by si typ nemusela vedieť určiť."""
+    path = url.strip().split('?', 1)[0].split('#', 1)[0]
+    return path.lower().endswith('.m3u8')
+
+
+def add_adaptive(text):
+    """Pred adresu HLS kanálov vloží `#KODIPROP:inputstream=inputstream.adaptive`, aby ich
+    Kodi neprehrávalo vstavaným ffmpeg HLS, ktorý po ~30 s bez odpovede servera skončí
+    (eof), ale cez ISA, ktorá zaseknutie prežije (overené 16. 11. 2026 simuláciou 35 aj
+    60 s). Nemenia sa kanály, ktoré majú riadky #EXTVLCOPT (vlastný User-Agent/Referer:
+    nie je overené, že ISA ich prevezme) alebo už vlastné `inputstream=`, a adresy, čo
+    nie sú .m3u8. Vráti (text, počet kanálov s úpravou)."""
+    lines = text.split('\n')
+    out, entry, count = [], [], 0
+    for line in lines:
+        if not entry:
+            if line.startswith('#EXTINF'):
+                entry = [line]
+            else:
+                out.append(line)
+            continue
+        entry.append(line)
+        if line.strip() and not line.startswith('#'):
+            body = [l.strip() for l in entry[1:-1]]
+            skip = (any(l.startswith('#EXTVLCOPT') for l in body)
+                    or any(l.lower().startswith('#kodiprop:inputstream') for l in body)
+                    or not _is_hls_url(line))
+            if skip:
+                out.extend(entry)
+            else:
+                cr = '\r' if entry[0].endswith('\r') else ''
+                out.extend([entry[0], ADAPTIVE_PROP + cr] + entry[1:])
+                count += 1
+            entry = []
+    out.extend(entry)           # nedokončený záznam na konci sa nechá tak
+    return '\n'.join(out), count
+
+
 # --- skrytie kanálov bez EPG ---------------------------------------------------
 
 _EPG_CHANNEL_TAG = re.compile(rb'<channel\b[^>]*>')
@@ -434,16 +477,18 @@ def hide_no_epg(text, ids):
 # --- výsledný lokálny playlist -------------------------------------------------
 
 class Options:
-    """Nastavenia výstupu (skupiny, číslovanie, skrytie bez EPG). `report` vyplní
-    render(): `no_epg` (vynechané názvy) a `note` (dôvod, prečo sa niečo preskočilo)."""
+    """Nastavenia výstupu (skupiny, číslovanie, skrytie bez EPG, ISA). `report` vyplní
+    render(): `no_epg` (vynechané názvy), `note` (dôvod, prečo sa niečo preskočilo) a
+    `adaptive` (počet kanálov, ktoré dostali inputstream.adaptive)."""
 
     def __init__(self, groups=False, chno_start=DEFAULT_CHNO_START, hide_no_epg=False,
-                 epg_path=None):
+                 epg_path=None, adaptive=False):
+        self.adaptive = bool(adaptive)
         self.groups = bool(groups)
         self.chno_start = int(chno_start)
         self.hide_no_epg = bool(hide_no_epg) and bool(epg_path)
         self.epg_path = epg_path
-        self.report = {'no_epg': [], 'note': ''}
+        self.report = {'no_epg': [], 'note': '', 'adaptive': 0}
 
     def signature(self):
         """Odtlačok nastavení, ktoré menia výstup; prázdny, keď sú obe funkcie vypnuté."""
@@ -452,6 +497,8 @@ class Options:
             parts.append('g%d' % self.chno_start)
         if self.hide_no_epg:
             parts.append('h' + epg_signature(self.epg_path))
+        if self.adaptive:
+            parts.append('a')
         return ','.join(parts)
 
 
@@ -471,7 +518,7 @@ def render(fixed, o2=None, opts=None):
     shown, removed = filter_duplicates(fixed, o2)
     if opts is None:
         return shown, removed
-    opts.report = {'no_epg': [], 'note': ''}
+    opts.report = {'no_epg': [], 'note': '', 'adaptive': 0}
     notes = []
     if opts.hide_no_epg:
         shown, no_epg, note = hide_no_epg(shown, epg_channel_ids(opts.epg_path))
@@ -484,6 +531,13 @@ def render(fixed, o2=None, opts=None):
             shown = decorated
         else:
             notes.append('skupiny preskočené: zmenil sa počet kanálov')
+    if opts.adaptive:
+        decorated, n = add_adaptive(shown)
+        if count_channels(decorated) == count_channels(shown):
+            shown = decorated
+            opts.report['adaptive'] = n
+        else:
+            notes.append('inputstream.adaptive preskočený: zmenil sa počet kanálov')
     opts.report['note'] = '; '.join(notes)
     return shown, removed
 

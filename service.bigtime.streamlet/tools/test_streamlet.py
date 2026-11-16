@@ -679,6 +679,103 @@ def read_file(path):
 
 # --- služba so stubmi Kodi -----------------------------------------------------
 
+class AddAdaptive(unittest.TestCase):
+    PROP = '#KODIPROP:inputstream=inputstream.adaptive'
+
+    @staticmethod
+    def entry(name, url, *extra):
+        return '\n'.join(['#EXTINF:-1 tvg-id="%s.cz",%s' % (name, name)] + list(extra) + [url])
+
+    def test_hls_channel_gets_prop_right_after_extinf(self):
+        text = '#EXTM3U\n' + self.entry('A', 'http://x/a/playlist.m3u8') + '\n'
+        out, n = streamlet.add_adaptive(text)
+        self.assertEqual(n, 1)
+        self.assertEqual(out.split('\n'), ['#EXTM3U', '#EXTINF:-1 tvg-id="A.cz",A', self.PROP,
+                                            'http://x/a/playlist.m3u8', ''])
+
+    def test_channel_count_and_url_unchanged(self):
+        text = '#EXTM3U\n' + '\n'.join(self.entry('K%d' % i, 'http://x/%d/index.m3u8?t=1' % i)
+                                         for i in range(5)) + '\n'
+        out, n = streamlet.add_adaptive(text)
+        self.assertEqual(n, 5)
+        self.assertEqual(streamlet.count_channels(out), 5)
+        self.assertEqual([l for l in out.split('\n') if l and not l.startswith('#')],
+                         [l for l in text.split('\n') if l and not l.startswith('#')])
+
+    def test_skips_channels_with_vlc_options(self):
+        text = self.entry('A', 'http://x/a.m3u8', '#EXTVLCOPT:http-user-agent=Mozilla/5.0')
+        self.assertEqual(streamlet.add_adaptive(text), (text, 0))
+
+    def test_skips_non_m3u8_and_m3u8s(self):
+        for url in ('http://193.33.39.108:9011/play/a018', 'https://x/slager.m3u8s',
+                    'http://h/hbbTV/prima_sport/live_mq?offsetSeconds=0', 'http://h/a.ts'):
+            text = self.entry('A', url)
+            self.assertEqual(streamlet.add_adaptive(text), (text, 0), url)
+
+    def test_m3u8_in_query_does_not_count(self):
+        text = self.entry('A', 'http://h/play?file=a.m3u8')
+        self.assertEqual(streamlet.add_adaptive(text)[1], 0)
+
+    def test_uppercase_extension_counts(self):
+        self.assertEqual(streamlet.add_adaptive(self.entry('A', 'http://h/A.M3U8'))[1], 1)
+
+    def test_existing_inputstream_prop_is_kept(self):
+        text = self.entry('A', 'http://x/a.m3u8', '#KODIPROP:inputstream=inputstream.ffmpegdirect')
+        self.assertEqual(streamlet.add_adaptive(text), (text, 0))
+
+    def test_idempotent(self):
+        once, _ = streamlet.add_adaptive(self.entry('A', 'http://x/a.m3u8'))
+        twice, n = streamlet.add_adaptive(once)
+        self.assertEqual((twice, n), (once, 0))
+
+    def test_crlf_line_endings_keep_crlf(self):
+        text = '#EXTM3U\r\n#EXTINF:-1,A\r\nhttp://x/a.m3u8\r\n'
+        out, n = streamlet.add_adaptive(text)
+        self.assertEqual(n, 1)
+        self.assertEqual(out, '#EXTM3U\r\n#EXTINF:-1,A\r\n' + self.PROP + '\r\nhttp://x/a.m3u8\r\n')
+
+    def test_unfinished_last_entry_is_left_alone(self):
+        text = '#EXTM3U\n#EXTINF:-1,A'
+        self.assertEqual(streamlet.add_adaptive(text), (text, 0))
+
+    def test_mixed_playlist_only_plain_hls_changed(self):
+        text = '\n'.join([
+            '#EXTM3U',
+            self.entry('A', 'http://x/a.m3u8'),
+            self.entry('B', 'http://x/b.m3u8', '#EXTVLCOPT:http-referrer=https://r/'),
+            self.entry('C', 'http://x/c/play'),
+            self.entry('D', 'http://x/d.m3u8')]) + '\n'
+        out, n = streamlet.add_adaptive(text)
+        self.assertEqual(n, 2)
+        self.assertEqual(out.count(self.PROP), 2)
+        self.assertEqual(streamlet.count_channels(out), 4)
+
+    def test_render_adds_prop_only_when_enabled_and_counts_in_report(self):
+        text = make_playlist(25)
+        plain, _ = streamlet.render(text, None, streamlet.Options())
+        self.assertNotIn('KODIPROP', plain)
+        opts = streamlet.Options(adaptive=True)
+        out, _ = streamlet.render(text, None, opts)
+        self.assertEqual(out.count(self.PROP), opts.report['adaptive'])
+        self.assertGreater(opts.report['adaptive'], 0)
+        self.assertEqual(streamlet.count_channels(out), 25)
+
+    def test_render_with_groups_keeps_prop_and_attributes(self):
+        opts = streamlet.Options(groups=True, adaptive=True)
+        out, _ = streamlet.render(playlist_with_ids(['K%d.cz' % i for i in range(30)]), None, opts)
+        self.assertEqual(len(extinf_rows(out)), 30)
+        self.assertTrue(all(attr(l, 'tvg-chno') for l in extinf_rows(out)))
+        self.assertEqual(out.count(self.PROP), opts.report['adaptive'])
+
+    def test_signature_changes_with_adaptive_but_off_is_legacy(self):
+        keys = {'a'}
+        self.assertEqual(streamlet.filter_signature(keys, streamlet.Options(adaptive=False)),
+                         streamlet.keys_signature(keys))
+        on = streamlet.filter_signature(keys, streamlet.Options(adaptive=True))
+        self.assertNotEqual(on, streamlet.keys_signature(keys))
+        self.assertEqual(on, streamlet.filter_signature(keys, streamlet.Options(adaptive=True)))
+
+
 class DownloadEpg(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -823,6 +920,7 @@ class MigrateEpg(unittest.TestCase):
 class KodiStub:
     def __init__(self):
         self.iptv_enabled = True
+        self.isa_enabled = True
         self.settings = {}
         self.toasts = []
         self.logs = []
@@ -836,7 +934,7 @@ def _install_stubs(tmp):
     xbmc = types.ModuleType('xbmc')
     xbmc.LOGINFO, xbmc.LOGWARNING, xbmc.LOGERROR = 1, 2, 3
     xbmc.log = lambda msg, level=1: KODI.logs.append(msg)
-    xbmc.getCondVisibility = lambda expr: KODI.iptv_enabled
+    xbmc.getCondVisibility = lambda expr: KODI.isa_enabled if 'inputstream.adaptive' in expr else KODI.iptv_enabled
     xbmc.executeJSONRPC = lambda p: KODI.rpc.append(p) or '{}'
 
     xbmcaddon = types.ModuleType('xbmcaddon')
@@ -1150,6 +1248,7 @@ class Core(unittest.TestCase):
 
     def test_groups_off_gives_plain_playlist(self):
         KODI.settings['groups'] = 'false'
+        KODI.settings['adaptive'] = 'false'
         self.core.cycle()
         self.assertEqual(self.local_text(), read_file(self.core.raw_path()))
         self.assertNotIn('tvg-chno', self.local_text())
@@ -1177,6 +1276,7 @@ class Core(unittest.TestCase):
 
     def test_signature_stored_and_stable(self):
         KODI.settings['groups'] = 'false'
+        KODI.settings['adaptive'] = 'false'
         self.core.cycle()
         self.assertEqual(self.core.load_state()['filter_sig'], streamlet.keys_signature(None))
         KODI.settings['groups'] = 'true'
@@ -1186,6 +1286,33 @@ class Core(unittest.TestCase):
         self.core.cycle()
         self.assertEqual(self.core.load_state()['filter_sig'], sig)
         self.assertEqual(os.stat(self.core.local_path()).st_mtime_ns, before)
+
+    def test_adaptive_on_by_default_in_local_but_not_in_raw(self):
+        self.core.cycle()
+        self.assertIn('#KODIPROP:inputstream=inputstream.adaptive', self.local_text())
+        self.assertNotIn('KODIPROP', read_file(self.core.raw_path()))
+        self.assertEqual(streamlet.count_channels(self.local_text()), 30)
+
+    def test_adaptive_off_gives_no_prop(self):
+        KODI.settings['adaptive'] = 'false'
+        self.core.cycle()
+        self.assertNotIn('KODIPROP', self.local_text())
+
+    def test_adaptive_not_used_when_isa_is_not_enabled(self):
+        KODI.isa_enabled = False
+        self.core.cycle()
+        self.assertNotIn('KODIPROP', self.local_text())
+
+    def test_toggling_adaptive_rewrites_without_download(self):
+        self.core.cycle()
+        self.assertEqual(self.calls, 1)
+        KODI.settings['adaptive'] = 'false'
+        self.core.cycle()
+        self.assertNotIn('KODIPROP', self.local_text())
+        KODI.settings['adaptive'] = 'true'
+        self.core.cycle()
+        self.assertIn('KODIPROP', self.local_text())
+        self.assertEqual(self.calls, 1)
 
     def test_hide_no_epg_waits_for_epg_then_hides(self):
         KODI.settings['hide_no_epg'] = 'true'
