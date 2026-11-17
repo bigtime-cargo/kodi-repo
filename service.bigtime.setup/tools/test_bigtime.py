@@ -137,7 +137,7 @@ class ManifestPatches(unittest.TestCase):
             self.entries = json.load(f)['patches']
 
     def test_manifest_nie_je_prazdny(self):
-        self.assertEqual(len(self.entries), 3)
+        self.assertEqual(len(self.entries), 4)
         for e in self.entries:
             patcher.validate_entry(e)
 

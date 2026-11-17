@@ -24,6 +24,9 @@ TARGETS = {
     ('plugin.video.youtube', 'provider.py'): (
         'resources/lib/youtube_plugin/youtube/provider.py',
         'YouTube tokeny: zrušený refresh token zneplatní len svoj slot, nie všetky tri'),
+    ('plugin.video.youtube', 'player_monitor.py'): (
+        'resources/lib/youtube_plugin/kodion/monitors/player_monitor.py',
+        'YouTube: onPlayBackEnded beží vo vlákne (deadlock s grafickým zámkom Kodi pri konci prehrávania)'),
     ('service.sc.helper', 'service.py'): (
         'service.py',
         'SC helper: session expiruje po 12 h namiesto 30 min (reconnect po pauze už nedá 404)'),

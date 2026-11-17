@@ -13,6 +13,15 @@
     {
       "addon_id": "plugin.video.youtube",
       "version": "7.4.4",
+      "rel_path": "resources/lib/youtube_plugin/kodion/monitors/player_monitor.py",
+      "orig_sha256": "cfa025601ff7ddb91f6499b0896438e3f9ccb59118e62336ecfb4edacf488b68",
+      "patched_sha256": "fccee62a71cd9c7290907f726f834ce90a0aebc8e05ed6a76a3a50ed43bce818",
+      "patch": "plugin.video.youtube/7.4.4/player_monitor.py.patch",
+      "popis": "YouTube: onPlayBackEnded beží vo vlákne (deadlock s grafickým zámkom Kodi pri konci prehrávania)"
+    },
+    {
+      "addon_id": "plugin.video.youtube",
+      "version": "7.4.4",
       "rel_path": "resources/lib/youtube_plugin/youtube/provider.py",
       "orig_sha256": "7cc8c4c161cde7d5abfc2d2fef440e784c1b51635f9e64739feaa779035e958a",
       "patched_sha256": "d011c05e171ea1d363cfe116e9f7e745057bbeb3f772a937596fce5abe1aab9e",

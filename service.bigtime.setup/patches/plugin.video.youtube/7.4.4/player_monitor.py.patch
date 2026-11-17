@@ -1,0 +1,15 @@
+--- a/resources/lib/youtube_plugin/kodion/monitors/player_monitor.py
++++ b/resources/lib/youtube_plugin/kodion/monitors/player_monitor.py
+@@ -465,6 +465,12 @@
+                                                 player_data))
+ 
+     def onPlayBackEnded(self):
++        # Kodi pri ruseni prehravaca drzi graficky zamok a caka na tento
++        # callback; busy_dialog_active() -> getCurrentWindowDialogId() si
++        # ten isty zamok pyta => deadlock. Preto mimo callbacku.
++        threading.Thread(target=self._playback_ended, daemon=True).start()
++
++    def _playback_ended(self):
+         ui = self._ui
+         if not ui.busy_dialog_active():
+             ui.clear_property(BUSY_FLAG)
