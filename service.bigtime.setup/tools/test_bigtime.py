@@ -649,7 +649,7 @@ class Sluzba(unittest.TestCase):
         self.assertEqual(vals['kodi_addon_instance_name'], 'Bigtime TV')
         self.assertEqual(vals['m3uPath'], self.merged)
         self.assertEqual(vals['epgPath'], self.merged_epg)
-        self.assertEqual(vals['m3uRefreshIntervalMins'], '15')
+        self.assertEqual(vals['m3uRefreshIntervalMins'], '5')
         text = read(self.merged).decode()
         self.assertIn('#BIGTIME-MERGED', text)
         self.assertEqual(text.count('#EXTINF'), 4)
@@ -662,6 +662,47 @@ class Sluzba(unittest.TestCase):
         self.assertEqual(core.iptv_cycle(), iptv.SPOJENE)       # nič nové
         self.assertEqual(self.instancie(), ['instance-settings-1.xml'])
         self.assertEqual(len(KODI.notifications), 1)
+
+    def stara_spolocna(self, interval, m3u=None):
+        """Inštancia ako z 1.3.0/1.3.1: spoločný zoznam s obnovou `interval` min a vlastným nastavením."""
+        write(os.path.join(self.sdir, 'instance-settings-1.xml'),
+              iptv.build_settings_xml(m3u or self.merged, self.merged_epg, iptv.MERGED_NAME, (
+                  ('m3uRefreshMode', '1'), ('m3uRefreshIntervalMins', interval),
+                  ('mojeNastavenie', 'hodnota'))).encode())
+
+    def test_obnova_spolocnej_instancie_sa_skrati_z_15_na_5(self):
+        self.zdroje()
+        self.stara_spolocna('15')
+        self.assertEqual(core.iptv_cycle(), iptv.SPOJENE)
+        v = self.hodnoty(1)
+        self.assertEqual(v['m3uRefreshIntervalMins'], '5')
+        self.assertEqual(v['mojeNastavenie'], 'hodnota')            # ostatné ostane
+        self.assertEqual(v['m3uPath'], self.merged)
+        self.assertEqual(KODI.rpc, [])                               # žiadne prepínanie doplnkov
+        self.assertEqual(KODI.notifications, [])                     # bez toastu
+        self.assertEqual(core.load_state()['reload_needed'], ['pvr.iptvsimple'])
+        before = self.subory_instancii()
+        self.assertEqual(core.iptv_cycle(), iptv.SPOJENE)           # druhýkrát nič
+        self.assertEqual(self.subory_instancii(), before)
+
+    def test_rucne_nastavena_obnova_ostane(self):
+        self.zdroje()
+        self.stara_spolocna('30')
+        core.iptv_cycle()
+        self.assertEqual(self.hodnoty(1)['m3uRefreshIntervalMins'], '30')
+        self.assertNotIn('reload_needed', core.load_state())
+
+    def test_obnova_cudzej_instancie_sa_nemeni(self):
+        self.zdroje()
+        foreign = os.path.join(self.tmp, 'cudzi', 'playlist.m3u')
+        write(foreign, b'#EXTM3U\n')
+        write(os.path.join(self.sdir, 'instance-settings-2.xml'),
+              iptv.build_settings_xml(foreign, self.merged_epg, 'NBA', (
+                  ('m3uRefreshIntervalMins', '15'),)).encode())
+        self.stara_spolocna('15')
+        core.iptv_cycle()
+        self.assertEqual(self.hodnoty(1)['m3uRefreshIntervalMins'], '5')
+        self.assertEqual(self.hodnoty(2)['m3uRefreshIntervalMins'], '15')
 
     def test_iptv_pri_prehravani_tiez_zapise_bez_jsonrpc(self):
         self.zdroje()
@@ -790,7 +831,7 @@ class Sluzba(unittest.TestCase):
         self.assertEqual(v1['kodi_addon_instance_name'], 'Bigtime TV')
         self.assertEqual(v1['m3uPath'], self.merged)
         self.assertEqual(v1['epgPath'], self.merged_epg)
-        self.assertEqual(v1['m3uRefreshIntervalMins'], '15')
+        self.assertEqual(v1['m3uRefreshIntervalMins'], '5')
         self.assertEqual(v1['mojeNastavenie'], 'hodnota')
         # ostatné naše → prázdny playlist, názov ostáva
         for n, name in ((2, 'Streamlet CZ (Bigtime)'), (3, 'Magio GO (Bigtime)')):

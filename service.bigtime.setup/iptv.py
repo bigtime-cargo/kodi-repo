@@ -28,6 +28,14 @@ MAGIO_EXTRA = (
     ('m3uRefreshIntervalMins', '15'),
     ('epgCache', 'true'),
 )
+# Spoločná inštancia: obnova každých 5 min (do 1.3.1 15), pozri retime_merged.
+OLD_REFRESH_MINS = '15'
+MERGED_REFRESH_MINS = '5'
+MERGED_EXTRA = (
+    ('m3uRefreshMode', '1'),
+    ('m3uRefreshIntervalMins', MERGED_REFRESH_MINS),
+    ('epgCache', 'true'),
+)
 # Spoločná inštancia: doplnok service.bigtime.setup spojí playlisty a EPG všetkých
 # zdrojov (merge.py), aby Kodi nemalo každú skupinu (Šport...) po jednej za zdroj.
 MERGED_MARKER = b'#BIGTIME-MERGED'
@@ -288,7 +296,26 @@ def write_atomic(path, text):
 
 def merged_values(m3u_path, epg_path):
     """Nastavenia spoločnej inštancie (rovnaké ako pri novo vytvorenej)."""
-    return _values(m3u_path, epg_path, MERGED_NAME, MAGIO_EXTRA)
+    return _values(m3u_path, epg_path, MERGED_NAME, MERGED_EXTRA)
+
+
+def retime_merged(settings_dir, translate=_identity):
+    """Spoločným inštanciám s našou starou obnovou 15 min (do 1.3.1) skráti obnovu na
+    MERGED_REFRESH_MINS, aby sa zelené guľôčky archívu po štarte objavili skôr (IPTV Simple číta
+    EPG pri štarte skôr, než ho služby Magio GO a setup zapíšu nanovo, a potom až pri obnove).
+    Iná hodnota (nastavená ručne) ostane. Vráti zoznam zmenených súborov."""
+    merged = _real(MERGED_PLAYLIST, translate)
+    changed = []
+    for _num, path in list_instances(settings_dir):
+        m3u = read_setting(path, 'm3uPath')
+        real = _real(m3u, translate) if m3u else None
+        if real is None or not (real == merged or file_has_marker(real, MERGED_MARKER)):
+            continue
+        if read_setting(path, 'm3uRefreshIntervalMins') != OLD_REFRESH_MINS:
+            continue
+        write_atomic(path, render_instance(path, (('m3uRefreshIntervalMins', MERGED_REFRESH_MINS),)))
+        changed.append(path)
+    return changed
 
 
 def emptied_values(empty_path, epg_path):

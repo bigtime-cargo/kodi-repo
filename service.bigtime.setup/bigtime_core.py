@@ -380,6 +380,21 @@ def finish_migration():
     return True
 
 
+def retime_cycle():
+    """Skráti obnovu spoločnej inštancie z 15 na 5 min (prejaví sa po reštarte Kodi, bez toastu)."""
+    try:
+        changed = iptv.retime_merged(iptv_dir(), translate)
+    except Exception as exc:
+        log('skrátenie obnovy inštancie zlyhalo: %r' % exc, xbmc.LOGWARNING)
+        return
+    if changed:
+        log('obnova spoločnej inštancie skrátená na %s min: %s'
+            % (iptv.MERGED_REFRESH_MINS, ', '.join(os.path.basename(p) for p in changed)))
+        state = load_state()
+        state['reload_needed'] = sorted(set(_reload_list(state)) | {PVR_IPTV})
+        save_state(state)
+
+
 def iptv_cycle():
     """Udržuje spoločný zoznam kanálov a jeho inštanciu IPTV Simple. Vráti
     iptv.SPOJENE / SAMOSTATNE / ZIADNA, resp. CAKA / NEDOSTUPNY.
@@ -396,6 +411,7 @@ def iptv_cycle():
     merge_cycle()
     if mode == iptv.SPOJENE:
         finish_migration()
+        retime_cycle()
         return mode
     if not os.path.isfile(translate(iptv.MERGED_PLAYLIST)):
         return CAKA
@@ -404,7 +420,7 @@ def iptv_cycle():
         return NEDOSTUPNY
 
     path = iptv.create_instance(iptv_dir(), translate(iptv.MERGED_PLAYLIST), translate(iptv.MERGED_EPG),
-                                iptv.MERGED_NAME, iptv.MAGIO_EXTRA)
+                                iptv.MERGED_NAME, iptv.MERGED_EXTRA)
     log('vytvorená spoločná inštancia IPTV Simple: %s' % os.path.basename(path))
     state = load_state()
     state['reload_needed'] = sorted(set(_reload_list(state)) | {PVR_IPTV})

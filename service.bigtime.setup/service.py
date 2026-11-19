@@ -4,7 +4,7 @@ import xbmc
 
 import bigtime_core as core
 
-START_DELAY = 120       # s po štarte Kodi, kým sa doplnky usadia
+START_DELAY = 60        # s po štarte Kodi, kým sa doplnky usadia (Magio GO má EPG po ~45 s)
 TICK = 300              # s, ako často sa pozrieť na IPTV (lacná kontrola súborov)
 PATCH_EVERY = 1800      # s, ako často prejsť manifest záplat
 
