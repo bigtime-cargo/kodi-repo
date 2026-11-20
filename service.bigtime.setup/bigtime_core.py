@@ -381,7 +381,7 @@ def finish_migration():
 
 
 def retime_cycle():
-    """Skráti obnovu spoločnej inštancie z 15 na 5 min (prejaví sa po reštarte Kodi, bez toastu)."""
+    """Skráti obnovu spoločnej inštancie z 15 (1.3.1) alebo 5 min (1.3.2) na 2 min (prejaví sa po reštarte Kodi, bez toastu)."""
     try:
         changed = iptv.retime_merged(iptv_dir(), translate)
     except Exception as exc:
