@@ -109,6 +109,12 @@ MIGRATION = 'migration'      # stav migrácie v state.json: {'phase': ..., ...}
 PREPARED, RESTARTED, DONE, FAILED = 'prepared', 'restarted', 'done', 'failed'
 
 
+NBA_ADDON = 'service.bigtime.nba'
+NBA_CLEANUP = 'nba_cleanup'  # upratanie zrušeného doplnku NBA v state.json: {'phase': ...}
+NBA_ADDON_REMOVED, NBA_ADDON_RESTARTED = 'addon_removed', 'addon_restarted'
+NBA_EMPTIED, NBA_EMPTIED_RESTARTED, NBA_DONE = 'emptied', 'emptied_restarted', 'done'
+
+
 def reset_pending():
     """Po štarte Kodi sa `reload_needed` zahodí: Kodi už načítal nové súbory.
     Stav `warned` (INE) ostáva."""
@@ -118,7 +124,11 @@ def reset_pending():
     restarted = isinstance(mig, dict) and mig.get('phase') == PREPARED
     if restarted:
         mig['phase'] = RESTARTED        # Kodi sa po príprave reštartovalo a načítalo prepísané inštancie
-    if any(v for v in had) or restarted:
+    nba = state.get(NBA_CLEANUP)
+    nba_step = isinstance(nba, dict) and nba.get('phase') in (NBA_ADDON_REMOVED, NBA_EMPTIED)
+    if nba_step:
+        nba['phase'] = NBA_ADDON_RESTARTED if nba['phase'] == NBA_ADDON_REMOVED else NBA_EMPTIED_RESTARTED
+    if any(v for v in had) or restarted or nba_step:
         save_state(state)
 
 
@@ -429,6 +439,97 @@ def iptv_cycle():
     return iptv.SPOJENE
 
 
+def _rmtree(path):
+    """Zmaže adresár (nie symlink); True, keď po volaní neexistuje."""
+    if os.path.islink(path):
+        os.unlink(path)
+    elif os.path.isdir(path):
+        shutil.rmtree(path)
+    return not os.path.lexists(path)
+
+
+def nba_cleanup_cycle():
+    """Doplnok NBA je zrušený (1.4.0): jednorazovo ho odstráni zo zariadenia. Vypnúť ho nestačí
+    (jeho služba by znova vytvorila inštanciu IPTV Simple), preto po krokoch s reštartom Kodi:
+    1. zmaže sa priečinok doplnku (bežiaca služba dobeží, inštancia ostane, nič nevznikne nové),
+    2. po reštarte (služba už nebeží) sa inštancia „NBA (Bigtime)“ vyprázdni (rovnako ako pri
+       migrácii: Kodi po reštarte samo zmaže jej kanály aj EPG) a zmažú sa dáta `addon_data`,
+    3. po ďalšom reštarte sa vyprázdnená inštancia zmaže (len ak ešte číta prázdny playlist).
+    Cudzie ani ručne zmenené inštancie sa nedotknú. Vráti True, keď sa niečo urobilo."""
+    state = load_state()
+    cur = state.get(NBA_CLEANUP)
+    phase = cur.get('phase') if isinstance(cur, dict) else None
+    if phase in (NBA_DONE, NBA_ADDON_REMOVED, NBA_EMPTIED):
+        return False                                    # hotovo, alebo čaká na reštart Kodi
+    addon_path = os.path.join(addons_dir(), NBA_ADDON)
+    data_path = translate(_ADDON_DATA + NBA_ADDON)
+    found = iptv.nba_instances(iptv_dir(), translate) if os.path.isdir(iptv_dir()) else []
+
+    if phase is None and not (os.path.lexists(addon_path) or os.path.lexists(data_path) or found):
+        state[NBA_CLEANUP] = {'phase': NBA_DONE, 'at': time.time()}     # nič na upratanie (čistá inštalácia)
+        save_state(state)
+        return False
+
+    if phase is None and os.path.lexists(addon_path):
+        if not _rmtree(addon_path):
+            log('priečinok doplnku NBA sa nepodarilo zmazať', xbmc.LOGWARNING)
+            return False
+        state[NBA_CLEANUP] = {'phase': NBA_ADDON_REMOVED, 'at': time.time()}
+        log('doplnok NBA zmazaný, upratanie pokračuje po reštarte Kodi')
+        if found:
+            state['reload_needed'] = sorted(set(_reload_list(state)) | {NBA_ADDON})
+        save_state(state)
+        return True
+
+    if phase in (None, NBA_ADDON_RESTARTED):
+        # služba NBA už nebeží (priečinok neexistuje a Kodi sa po jeho zmazaní reštartovalo)
+        emptied = []
+        if found:
+            if not iptv_available():
+                log('IPTV Simple nie je dostupný, upratanie NBA čaká')
+                return False
+            empty = translate(iptv.EMPTY_PLAYLIST)
+            epg = translate(iptv.MERGED_EPG)
+            new = {path: iptv.render_instance(path, iptv.emptied_values(empty, epg)) for _n, path in found}
+            iptv.write_atomic(empty, '#EXTM3U\n')
+            for path, text in new.items():
+                iptv.write_atomic(path, text)
+            emptied = [n for n, _p in found]
+        try:
+            _rmtree(data_path)
+        except OSError as exc:
+            log('zmazanie dát NBA zlyhalo: %r' % exc, xbmc.LOGWARNING)
+        state[NBA_CLEANUP] = {'phase': NBA_EMPTIED if emptied else NBA_DONE, 'at': time.time(),
+                              'emptied': emptied}
+        if emptied:
+            state['reload_needed'] = sorted(set(_reload_list(state)) | {PVR_IPTV})
+        save_state(state)
+        log('NBA: inštancie vyprázdnené %s, dáta zmazané' % (emptied or '-'))
+        if emptied:
+            toast('NBA je zrušené — reštartuj Kodi, kanály a EPG NBA zmiznú.', warning=True)
+        return True
+
+    if phase == NBA_EMPTIED_RESTARTED:
+        empty = os.path.normpath(translate(iptv.EMPTY_PLAYLIST))
+        removed = []
+        for num in cur.get('emptied') or []:
+            path = os.path.join(iptv_dir(), 'instance-settings-%d.xml' % num)
+            current = iptv.read_setting(path, 'm3uPath')
+            if current and os.path.normpath(translate(current)) == empty:
+                try:
+                    os.remove(path)
+                    removed.append(num)
+                except OSError as exc:
+                    log('zmazanie inštancie NBA %d zlyhalo: %r' % (num, exc), xbmc.LOGWARNING)
+        state[NBA_CLEANUP] = {'phase': NBA_DONE, 'at': time.time(), 'removed': removed}
+        if removed:
+            state['reload_needed'] = sorted(set(_reload_list(state)) | {PVR_IPTV})
+        save_state(state)
+        log('NBA: upratanie dokončené, zmazané inštancie: %s' % (removed or '-'))
+        return True
+    return False
+
+
 def cycle(patches=True):
     """Jedno kolo služby; každá časť sa chráni samostatne."""
     if patches:
@@ -440,6 +541,10 @@ def cycle(patches=True):
         iptv_cycle()
     except Exception as exc:
         log('kolo IPTV zlyhalo: %r' % exc, xbmc.LOGERROR)
+    try:
+        nba_cleanup_cycle()
+    except Exception as exc:
+        log('upratanie NBA zlyhalo: %r' % exc, xbmc.LOGERROR)
 
 
 # --- dialóg skriptu ---------------------------------------------------------

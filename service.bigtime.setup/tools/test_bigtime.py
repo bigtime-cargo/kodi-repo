@@ -1059,5 +1059,102 @@ class Sluzba(unittest.TestCase):
         self.assertEqual(mon.waits, [service.START_DELAY])
 
 
+    # --- zrušený doplnok NBA (1.4.0) ---
+
+    def nba_stav(self, instancia=True, doplnok=True, data=True):
+        """Priečinok doplnku NBA, jeho dáta a inštancia 4 s jeho playlistom + cudzia inštancia 5."""
+        nba_pl = os.path.join(self.ud, 'addon_data', 'service.bigtime.nba', 'nba-us.m3u')
+        if doplnok:
+            write(os.path.join(self.addons, 'service.bigtime.nba', 'service.py'), b'x')
+        if data:
+            write(nba_pl, b'#EXTM3U\nhttp://example.invalid/nba\n')
+            write(os.path.join(os.path.dirname(nba_pl), 'nba-epg.xml'), b'<tv/>')
+        if instancia:
+            write(os.path.join(self.sdir, 'instance-settings-4.xml'),
+                  iptv.build_settings_xml(nba_pl, 'e', 'NBA (Bigtime)').encode())
+        cudzi = os.path.join(self.tmp, 'cudzi.m3u')
+        write(cudzi, b'#EXTM3U\nhttp://example.invalid/c\n')
+        write(os.path.join(self.sdir, 'instance-settings-5.xml'),
+              iptv.build_settings_xml(cudzi, 'e', 'Cudzia').encode())
+
+    def test_nba_upratanie_prebehne_po_krokoch_s_restartmi(self):
+        self.nba_stav()
+        cudzia = read(os.path.join(self.sdir, 'instance-settings-5.xml'))
+        # 1. kolo: zmaže sa len priečinok doplnku, inštancia a dáta ostanú (služba ešte beží)
+        self.assertTrue(core.nba_cleanup_cycle())
+        self.assertFalse(os.path.exists(os.path.join(self.addons, 'service.bigtime.nba')))
+        self.assertTrue(os.path.exists(os.path.join(self.ud, 'addon_data', 'service.bigtime.nba', 'nba-us.m3u')))
+        self.assertEqual(self.hodnoty(4)['m3uPath'].endswith('nba-us.m3u'), True)
+        self.assertEqual(core.load_state()['nba_cleanup']['phase'], 'addon_removed')
+        self.assertFalse(core.nba_cleanup_cycle())              # pred reštartom nič ďalšie
+        self.assertTrue(os.path.exists(os.path.join(self.ud, 'addon_data', 'service.bigtime.nba')))
+        # reštart Kodi → 2. krok: inštancia vyprázdnená, dáta zmazané, toast
+        core.reset_pending()
+        self.assertEqual(core.load_state()['nba_cleanup']['phase'], 'addon_restarted')
+        self.assertTrue(core.nba_cleanup_cycle())
+        self.assertEqual(self.hodnoty(4)['m3uPath'], self.prazdny)
+        self.assertEqual(self.hodnoty(4)['kodi_addon_instance_name'], 'NBA (Bigtime)')
+        self.assertFalse(os.path.exists(os.path.join(self.ud, 'addon_data', 'service.bigtime.nba')))
+        self.assertEqual(core.load_state()['nba_cleanup']['phase'], 'emptied')
+        self.assertEqual(core.load_state()['reload_needed'], ['pvr.iptvsimple'])
+        self.assertEqual(len(KODI.notifications), 1)
+        self.assertFalse(core.nba_cleanup_cycle())
+        # ďalší reštart → 3. krok: vyprázdnená inštancia sa zmaže, cudzia ostane
+        core.reset_pending()
+        self.assertTrue(core.nba_cleanup_cycle())
+        self.assertFalse(os.path.exists(os.path.join(self.sdir, 'instance-settings-4.xml')))
+        self.assertEqual(read(os.path.join(self.sdir, 'instance-settings-5.xml')), cudzia)
+        self.assertEqual(core.load_state()['nba_cleanup']['phase'], 'done')
+        self.assertEqual(core.load_state()['nba_cleanup']['removed'], [4])
+        self.assertFalse(core.nba_cleanup_cycle())
+        self.assertEqual(KODI.rpc, [])
+
+    def test_nba_bez_priecinka_doplnku_sa_upratuje_hned(self):
+        self.nba_stav(doplnok=False)
+        self.assertTrue(core.nba_cleanup_cycle())
+        self.assertEqual(self.hodnoty(4)['m3uPath'], self.prazdny)
+        self.assertEqual(core.load_state()['nba_cleanup']['phase'], 'emptied')
+
+    def test_nba_cista_instalacia_nic_nerobi(self):
+        self.assertFalse(core.nba_cleanup_cycle())
+        self.assertEqual(core.load_state()['nba_cleanup']['phase'], 'done')
+        self.assertEqual(KODI.notifications, [])
+        self.nba_stav()                                         # po „done“ sa už nič nehľadá
+        self.assertFalse(core.nba_cleanup_cycle())
+        self.assertTrue(os.path.exists(os.path.join(self.addons, 'service.bigtime.nba')))
+
+    def test_nba_len_dalsie_zvysky_bez_instancie(self):
+        self.nba_stav(instancia=False, doplnok=True)
+        core.nba_cleanup_cycle()
+        core.reset_pending()
+        self.assertTrue(core.nba_cleanup_cycle())
+        self.assertFalse(os.path.exists(os.path.join(self.ud, 'addon_data', 'service.bigtime.nba')))
+        self.assertEqual(core.load_state()['nba_cleanup']['phase'], 'done')
+        self.assertEqual(KODI.notifications, [])
+
+    def test_nba_nezmaze_instanciu_ktoru_uzivatel_zmenil(self):
+        self.nba_stav(doplnok=False)
+        core.nba_cleanup_cycle()
+        mine = os.path.join(self.tmp, 'moj.m3u')
+        write(mine, b'#EXTM3U\nhttp://example.invalid/m\n')
+        write(os.path.join(self.sdir, 'instance-settings-4.xml'),
+              iptv.build_settings_xml(mine, 'e', 'Moja').encode())
+        core.reset_pending()
+        core.nba_cleanup_cycle()
+        self.assertTrue(os.path.exists(os.path.join(self.sdir, 'instance-settings-4.xml')))
+        self.assertEqual(core.load_state()['nba_cleanup']['removed'], [])
+
+    def test_nba_cycle_ho_vola_a_chyba_nezhodi_sluzbu(self):
+        self.nba_stav()
+        core.cycle(patches=False)
+        self.assertEqual(core.load_state()['nba_cleanup']['phase'], 'addon_removed')
+        real = core.nba_cleanup_cycle
+        core.nba_cleanup_cycle = lambda: 1 / 0
+        try:
+            core.cycle(patches=False)                           # výnimka sa zachytí
+        finally:
+            core.nba_cleanup_cycle = real
+
+
 if __name__ == '__main__':
     unittest.main()

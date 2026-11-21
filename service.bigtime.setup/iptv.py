@@ -50,6 +50,7 @@ SOURCE_PLAYLISTS = (
 SOURCE_MARKERS = (MARKER, MAGIO_MARKER)
 # Migrácia starých samostatných inštancií: prázdny playlist pre inštancie, ktoré sa vyradia
 EMPTY_PLAYLIST = 'special://userdata/addon_data/service.bigtime.setup/prazdny.m3u'
+NBA_PLAYLIST = 'special://userdata/addon_data/service.bigtime.nba/nba-us.m3u'   # zrušený doplnok NBA (1.4.0)
 ROLE_O2, ROLE_MAGIO, ROLE_STREAMLET = 'o2tv', 'magiogo', 'streamlet'
 ROLE_ORDER = (ROLE_O2, ROLE_MAGIO, ROLE_STREAMLET)      # ktorá inštancia sa stane spoločnou
 
@@ -321,3 +322,14 @@ def retime_merged(settings_dir, translate=_identity):
 def emptied_values(empty_path, epg_path):
     """Inštancia, ktorá nemá poskytovať žiadne kanály (názov ostáva, mení sa len zdroj)."""
     return (('m3uPathType', '0'), ('m3uPath', empty_path), ('epgPathType', '0'), ('epgPath', epg_path))
+
+
+def nba_instances(settings_dir, translate=_identity):
+    """Inštancie, ktoré čítajú playlist zrušeného doplnku NBA: zoznam (číslo, cesta)."""
+    nba = _real(NBA_PLAYLIST, translate)
+    found = []
+    for num, path in list_instances(settings_dir):
+        m3u = read_setting(path, 'm3uPath')
+        if m3u and nba is not None and _real(m3u, translate) == nba:
+            found.append((num, path))
+    return found
